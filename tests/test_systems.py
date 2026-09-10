@@ -324,6 +324,25 @@ class SaveTests(unittest.TestCase):
             self.assertEqual(GameState.load(path).to_dict(), first)
             self.assertEqual(json.loads(Path(str(path) + ".bak").read_text()), first)
 
+    def test_save_after_nested_json_corruption_preserves_recovered_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "save.json"
+            backup = Path(str(path) + ".bak")
+            state = GameState()
+            state.credits = 1234
+            self.assertTrue(state.save(path)[0])
+            self.assertTrue(state.save(path)[0])
+            original_backup = backup.read_bytes()
+            path.write_text('{"version":3,"nested":' + '[' * 100000
+                            + '0' + ']' * 100000 + '}', encoding="utf-8")
+            recovered = GameState.load(path)
+            self.assertEqual(recovered.credits, 1234)
+            recovered.credits += 100
+            success, message = recovered.save(path)
+            self.assertTrue(success, message)
+            self.assertEqual(GameState.load(path).credits, 1334)
+            self.assertEqual(backup.read_bytes(), original_backup)
+
     def test_optional_malformed_values_are_sanitized(self):
         bad = dict(version=3, inventory={"gold": -4, "carbon": "20", "oxygen": True, "ferrite": 999999, "invalid": 3},
                    credits=-300, upgrades={"cargo": 100, "engine": -1, "scanner": "yes"},

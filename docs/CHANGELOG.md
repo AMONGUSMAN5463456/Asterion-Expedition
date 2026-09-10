@@ -1,3 +1,10 @@
+# Unreleased
+
+## Save recovery
+
+- Fixed saving after recovery from an excessively nested JSON save. The corrupt
+  primary is now replaced without overwriting the previous valid backup.
+
 # Version 1.1.0 — worlds in colour
 
 ## Graphics

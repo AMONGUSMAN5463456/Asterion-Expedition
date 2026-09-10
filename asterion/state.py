@@ -582,8 +582,11 @@ class GameState:
     def _read_json(path):
         if path.stat().st_size > MAX_SAVE_BYTES:
             raise ValueError("Save file exceeds the supported size")
-        with path.open("r", encoding="utf-8") as stream:
-            data = json.load(stream, parse_constant=lambda value: (_ for _ in ()).throw(ValueError("Invalid numeric constant")))
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                data = json.load(stream, parse_constant=lambda value: (_ for _ in ()).throw(ValueError("Invalid numeric constant")))
+        except RecursionError as exc:
+            raise ValueError("Save JSON nesting exceeds the supported depth") from exc
         if not isinstance(data, dict):
             raise ValueError("Save root must be an object")
         if not any(key in data for key in ("version", "inventory", "system_id")):
