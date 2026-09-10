@@ -21,6 +21,7 @@ from .controller import PlayerController
 from .effects import PlayerEffects
 from .geometry import make_ship
 from .navigation import plan_route
+from .occlusion import AmbientOcclusion
 from .state import GameState
 from .ui import GameUI
 from .universe import galaxy_catalog, generate_system, get_planet, terrain_height
@@ -57,6 +58,8 @@ class ExpeditionApp(ShowBase):
         self.camLens.setFov(78)
         self.camLens.setNearFar(0.12, 80000)
         self.game = GameState()
+        self._ao_filters = None
+        self._ao_available = self.win.getGsg().getSupportsBasicShaders()
         self.system = generate_system(0)
         self.planet = self.system["planets"][0]
         self.world = WorldRenderer(self)
@@ -105,6 +108,21 @@ class ExpeditionApp(ShowBase):
         self._bind_controls()
         if not offscreen:
             self.taskMgr.add(self._frame, "expedition-update")
+
+    def _apply_ambient_occlusion(self):
+        enabled = (self._ao_available and self.game.mode == "surface"
+                   and self.game.settings.get("ambient_occlusion", True))
+        if enabled == (self._ao_filters is not None):
+            return
+        if not enabled:
+            self._ao_filters.cleanup()
+            self._ao_filters = None
+            return
+        try:
+            self._ao_filters = AmbientOcclusion(self.win, self.cam)
+        except RuntimeError as exc:
+            print(f"Ambient occlusion disabled: {exc}", file=sys.stderr)
+            self._ao_available = False
 
     def _bind_controls(self):
         mapping = {
@@ -282,6 +300,7 @@ class ExpeditionApp(ShowBase):
         self.target = None
         self.navigation = None
         self.world.update(0, self.controller.position, self.game.elapsed, 0)
+        self._apply_ambient_occlusion()
 
     def new_game(self):
         preferences = dict(self.game.settings)
@@ -407,6 +426,7 @@ class ExpeditionApp(ShowBase):
             for planet in self.system["planets"]])
         self.controller.set_collision_world(self.world.collisions)
         self.game.mode = "orbit"
+        self._apply_ambient_occlusion()
         if position is None:
             center = Vec3(*self.planet["position"])
             position = center + Vec3(0, -self.planet["size"] - 850, self.planet["size"] * .18)
@@ -855,6 +875,8 @@ class ExpeditionApp(ShowBase):
                             camera_motion=self.game.settings.get("camera_motion", .35),
                             boosting=self.controller.boosting, braking=self.controller.braking,
                             collision_feedback=self.controller.collision_feedback)
+        if self._ao_filters is not None:
+            self._ao_filters.update()
         self.hud_time += dt
         if self.hud_time >= 1 / 20:
             self.hud_time = 0
@@ -1099,6 +1121,9 @@ class ExpeditionApp(ShowBase):
                              self.button("LOUDER", "setting", {"key": "volume", "value": min(1, s.get("volume", .45) + .1)})]},
                 {"title": "World detail", "body": "Changes terrain and scenery draw distance. Applies when the next planet loads.", "meta": str(s.get("quality", "medium")).upper(),
                  "buttons": [self.button(q.upper(), "setting", {"key": "quality", "value": q}) for q in ("low", "medium", "high")]},
+                {"title": "Ambient occlusion", "body": "Soft contact shading on the surface. Applies immediately; disabled in orbit and on unsupported renderers.",
+                 "meta": ("On" if s.get("ambient_occlusion", True) else "Off") if self._ao_available else "Unavailable on this renderer",
+                 "buttons": [self.button("TOGGLE", "setting", {"key": "ambient_occlusion", "value": not s.get("ambient_occlusion", True)})] if self._ao_available else []},
             ]
         elif kind == "help":
             title, subtitle = "Pathfinder's field guide", "A practical guide to life beyond the chart."
@@ -1256,8 +1281,10 @@ class ExpeditionApp(ShowBase):
                     self.audio.set_volume(0 if self.no_audio else self.game.settings[key])
                 elif key == "fov":
                     self.camLens.setFov(self.game.settings[key])
-            elif key in ("invert_y", "mouse_capture", "flight_assist") and isinstance(value, bool):
+            elif key in ("invert_y", "mouse_capture", "flight_assist", "ambient_occlusion") and isinstance(value, bool):
                 self.game.settings[key] = value
+                if key == "ambient_occlusion":
+                    self._apply_ambient_occlusion()
             elif key == "quality" and value in ("low", "medium", "high"):
                 self.game.settings[key] = value
             self._refresh_panel()
@@ -1324,6 +1351,9 @@ class ExpeditionApp(ShowBase):
         self.cleaned = True
         self.ignoreAll()
         self.taskMgr.remove("expedition-update")
+        if self._ao_filters is not None:
+            self._ao_filters.cleanup()
+            self._ao_filters = None
         self._clear_beam()
         self._remove_ship()
         self.controller.destroy()

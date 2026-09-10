@@ -31,7 +31,7 @@ _EVENT_ALIASES = {
 }
 _DEFAULT_SETTINGS = dict(sensitivity=.16, invert_y=False, volume=.45, quality="medium",
                          fov=78.0, camera_motion=.35, mouse_smoothing=0.0,
-                         flight_assist=True, mouse_capture=True)
+                         flight_assist=True, mouse_capture=True, ambient_occlusion=True)
 _CONSUMABLES = {
     "oxygen": {"oxygen": 9}, "sodium": {"hazard": 16},
     "life_gel": {"oxygen": 85}, "ion_cell": {"hazard": 75, "energy": 55},
@@ -509,7 +509,7 @@ class GameState:
                                    ("fov", 60, 100), ("camera_motion", 0, 1),
                                    ("mouse_smoothing", 0, 1)):
                 state.settings[key] = _number(settings.get(key), _DEFAULT_SETTINGS[key], low, high)
-            for key in ("invert_y", "flight_assist", "mouse_capture"):
+            for key in ("invert_y", "flight_assist", "mouse_capture", "ambient_occlusion"):
                 if isinstance(settings.get(key), bool):
                     state.settings[key] = settings[key]
             if settings.get("quality") in ("low", "medium", "high"):

@@ -18,6 +18,7 @@ Python, Panda3D binaries, and a virtual environment are not bundled.
 | `asterion/navigation.py` | Bounded visibility route planner around orbital exclusion spheres |
 | `asterion/planet_visuals.py` | Deterministic CPU planet textures and explicit celestial shading |
 | `asterion/effects.py` | Camera-mounted survey equipment and ship cockpit |
+| `asterion/occlusion.py` | Optional depth-based surface ambient occlusion and compositing |
 | `asterion/world.py`, `asterion/geometry.py` | Procedural scene construction and streaming |
 | `asterion/state.py` | Inventory, economy, upgrades, missions, construction, JSON saves |
 | `asterion/content.py`, `asterion/universe.py` | Original authored content and deterministic generation |
@@ -39,6 +40,25 @@ macOS universal2, Windows x86-64, and common Linux targets. Wheel availability
 is not a guarantee that every GPU driver and desktop configuration will work.
 The [official Python downloads](https://www.python.org/downloads/) page is the
 source for installing Python separately.
+
+## Ambient occlusion
+
+Settings → Ambient occlusion enables soft contact shading on the surface.
+It defaults to on, applies immediately, and is stored in the expedition save.
+Orbit releases the effect's render targets; returning to a surface restores
+the saved preference. The world-detail setting remains independent.
+
+The GLSL 1.30 effect reconstructs positions and normals from scene depth,
+samples a 1.5-metre neighbourhood at half resolution, and uses depth-aware
+upsampling before compositing. Shading fades out between 80 and 120 metres.
+It does not replace scene material shaders or process the 2D HUD. Texture
+padding and lens changes are handled by the effect; Panda3D's filter manager
+resizes its render targets with the window.
+
+TinyDisplay runs without AO. Render-target or shader setup failure also leaves
+normal rendering active and marks the setting unavailable for that session.
+As a screen-space effect, AO cannot shade against geometry outside the camera
+view or hidden behind the visible depth layer.
 
 ## Useful commands
 

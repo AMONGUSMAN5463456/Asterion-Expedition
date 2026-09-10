@@ -1,5 +1,12 @@
 # Unreleased
 
+## Graphics
+
+- Added optional screen-space ambient occlusion for surface contact shading,
+  with a saved, immediate on/off control in Settings.
+- Kept existing material colours and HUD rendering unchanged. AO is disabled
+  in orbit and falls back to normal rendering when shaders are unavailable.
+
 ## Save recovery
 
 - Fixed saving after recovery from an excessively nested JSON save. The corrupt
