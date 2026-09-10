@@ -724,7 +724,7 @@ class GameUI:
         if self._scroll is not None and self._scroll_key is not None:
             try:
                 self._scroll_positions[self._scroll_key] = float(self._scroll.verticalScroll["value"])
-            except (AttributeError, TypeError, KeyError):
+            except Exception:
                 pass
 
     def _clear_menu(self):
@@ -733,7 +733,7 @@ class GameUI:
         for widget in reversed(self._menu_widgets):
             try:
                 widget.destroy()
-            except (AttributeError, KeyError):
+            except Exception:
                 pass
         self._menu_widgets = []
         if self.menu is not None:
@@ -952,7 +952,7 @@ class GameUI:
         try:
             current = float(self._scroll.verticalScroll["value"])
             self._scroll.verticalScroll["value"] = _clamp(current + direction * 82 / self._scroll_extent)
-        except (AttributeError, TypeError, KeyError):
+        except Exception:
             pass
 
     def show_title(self, has_save: bool):

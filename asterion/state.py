@@ -137,7 +137,7 @@ class GameState:
         return 240 + 120 * _int(self.upgrades.get("cargo"), 0, 0, 3)
 
     def cargo_used(self):
-        return sum(_int(value) for key, value in self.inventory.items() if key in ITEMS)
+        return sum(_int(value) for value in self.inventory.values())
 
     def add_item(self, item, amount):
         if not isinstance(item, str) or item not in ITEMS or not _quantity(amount):
@@ -174,6 +174,8 @@ class GameState:
         if not isinstance(recipe_id, str) or recipe_id not in RECIPES:
             return False, "That recipe is not in the fabricator."
         recipe = RECIPES[recipe_id]
+        if any(item not in ITEMS for item in recipe.get("outputs", {})):
+            return False, "That recipe's output is not in the cargo manifest."
         upgrade = recipe.get("upgrade")
         if upgrade:
             current = _int(self.upgrades.get(upgrade), 0, 0, 3)
@@ -261,7 +263,8 @@ class GameState:
         reward = round(base_reward * (1 + .4 * _int(self.upgrades.get("scanner"), 0, 0, 3)))
         clean.update(name=clean.get("name", "Unclassified discovery"), kind=kind,
                      reward=reward, elapsed=_number(self.elapsed))
-        clean.setdefault("planet_id", f"s{self.system_id}-p{self.planet_index}")
+        if not _planet_id(clean.get("planet_id")):
+            clean["planet_id"] = f"s{_int(self.system_id, 0, 0, 23)}-p{_int(self.planet_index, 0, 0, 3)}"
         self.discoveries[entity_id] = clean
         self.credits = min(MAX_CREDITS, self.credits + reward)
         self.record("discoveries")
@@ -358,6 +361,8 @@ class GameState:
         if not finite or amount <= 0 or amount > MAX_COUNT:
             return
         event = _EVENT_ALIASES.get(event, event)
+        if event not in self.stats and len(self.stats) >= 500:
+            return
         self.stats[event] = min(1e12, _number(self.stats.get(event)) + amount)
         if isinstance(amount, int) and self.stats[event].is_integer():
             self.stats[event] = int(self.stats[event])
@@ -516,35 +521,63 @@ class GameState:
                 state.settings["quality"] = settings["quality"]
         stats = data.get("stats", {})
         if isinstance(stats, dict):
+            if len(stats) > 500:
+                changed = True
             for key, value in list(stats.items())[:500]:
                 if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_:-]{1,80}", key):
                     number = _number(value)
                     state.stats[key] = int(number) if number.is_integer() else number
+                else:
+                    changed = True
+        elif "stats" in data:
+            changed = True
         visited = data.get("visited", [])
         if isinstance(visited, list):
             state.visited = list(dict.fromkeys(value for value in visited[:500] if _planet_id(value)))
+            if len(state.visited) != len(visited):
+                changed = True
+        elif "visited" in data:
+            changed = True
         discoveries = data.get("discoveries", {})
         if isinstance(discoveries, dict):
+            if len(discoveries) > 50000:
+                changed = True
             for key, value in list(discoveries.items())[:50000]:
                 if _identifier(key) and isinstance(value, dict):
                     state.discoveries[key] = _small_record(value)
+                else:
+                    changed = True
+        elif "discoveries" in data:
+            changed = True
         depleted = data.get("depleted", {})
         if isinstance(depleted, dict):
             for key, values in depleted.items():
                 if _depletion_location(key) and isinstance(values, list):
-                    state.depleted[key] = list(dict.fromkeys(value for value in values[:25000] if _identifier(value)))
+                    kept = list(dict.fromkeys(value for value in values[:25000] if _identifier(value)))
+                    if len(kept) != len(values):
+                        changed = True
+                    state.depleted[key] = kept
+                else:
+                    changed = True
+        elif "depleted" in data:
+            changed = True
         bases = data.get("bases", {})
         if isinstance(bases, dict):
             for planet_id, records in bases.items():
                 if not _planet_id(planet_id) or not isinstance(records, list):
+                    changed = True
                     continue
+                if len(records) > MAX_BASES_PER_PLANET:
+                    changed = True
                 clean_records = []
                 seen_ids = set()
                 for record in records[:MAX_BASES_PER_PLANET]:
                     if not isinstance(record, dict) or not isinstance(record.get("kind"), str) or record["kind"] not in BUILDINGS or not _valid_position(record.get("pos")):
+                        changed = True
                         continue
                     identifier = record.get("id", f"{planet_id}-base-{len(clean_records) + 1}")
                     if not _identifier(identifier) or identifier in seen_ids:
+                        changed = True
                         continue
                     seen_ids.add(identifier)
                     kind = record["kind"]
@@ -554,16 +587,22 @@ class GameState:
                                               last_collected=_number(record.get("last_collected"), state.elapsed, 0, state.elapsed),
                                               stored=_int(record.get("stored"), 0, 0, 60)))
                 state.bases[planet_id] = clean_records
+        elif "bases" in data:
+            changed = True
         contracts = data.get("contracts", [])
         templates = {template["id"]: template for template in CONTRACT_TEMPLATES}
         if isinstance(contracts, list):
             seen = set()
             active_count = 0
+            if len(contracts) > 150:
+                changed = True
             for record in contracts[-150:]:
                 if not isinstance(record, dict) or not isinstance(record.get("template"), str) or record["template"] not in templates or not _identifier(record.get("id")) or record["id"] in seen:
+                    changed = True
                     continue
                 claimed = record.get("claimed") is True
                 if not claimed and active_count >= 3:
+                    changed = True
                     continue
                 clean = copy.deepcopy(templates[record["template"]])
                 clean.update(id=record["id"], template=record["template"],
@@ -576,6 +615,8 @@ class GameState:
                     active_count += 1
                 seen.add(clean["id"])
                 state.contracts.append(clean)
+        elif "contracts" in data:
+            changed = True
         return state, changed
 
     @staticmethod

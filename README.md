@@ -47,7 +47,7 @@ or start a new expedition.
    Mac; the regular macOS universal installer works on Intel and Apple Silicon.
 3. Open the extracted folder and double-click **Start-Mac.command**. A Terminal
    window runs setup and then opens the game.
-4. Choose **New Expedition**. Press **H** any time during play for controls.
+4. Choose **BEGIN EXPEDITION** (or **CONTINUE EXPEDITION** when a save exists). Press **H** any time during play for controls.
 
 If Finder reports a permissions problem, use Terminal. Type `cd `, drag the
 extracted game folder into the Terminal window, and press Return. Then run:

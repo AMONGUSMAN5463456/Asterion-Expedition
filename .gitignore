@@ -1,0 +1,16 @@
+# Bytecode caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Private game environment created by bootstrap.py
+.venv/
+.venv-old/
+
+# Crash diagnostics written beside the save file
+crash.log
+
+# Packaging build outputs
+build/
+dist/
+*.egg-info/

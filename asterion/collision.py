@@ -228,7 +228,11 @@ def _cast_shape(shape, point, delta, radius, segment, skin=_SKIN,
             # this line once its directional derivative is nonnegative.
             return None
         advance = gap / closing
-        if fraction + advance > end + 1e-10:
+        if fraction + advance > end:
+            current = _add(point, _mul(delta, end))
+            distance, normal = _distance(shape, current, radius, segment)
+            if distance - skin <= 1e-7 and (ray or -_dot(delta, normal) > _EPS):
+                return _Hit(max(0.0, min(1.0, end)), normal, shape.id)
             return None
         fraction = min(end, fraction + advance)
     # A pathological grazing contact is conservatively blocked, never skipped.
@@ -510,7 +514,7 @@ class CollisionWorld:
         top = _vector(position)
         delta = _vector(displacement)
         segment = max(0., height / 2. - radius)
-        offset = height / 2. if height else 0.
+        offset = height / 2.
         point = (top[0], top[1], top[2] - offset)
         ignore = _ignored(ignore)
         point, normals, ids = self._recover(point, radius, segment, ignore)

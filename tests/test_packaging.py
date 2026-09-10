@@ -1,10 +1,12 @@
 """Offline launcher and distribution checks; never install a package in tests."""
 
 from contextlib import redirect_stdout
+import hashlib
 import importlib.util
 import io
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -15,9 +17,23 @@ import wave
 
 
 ROOT = Path(__file__).resolve().parents[1]
-_spec = importlib.util.spec_from_file_location("asterion_bootstrap_tests", ROOT / "bootstrap.py")
-bootstrap = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(bootstrap)
+_BOOTSTRAP_MODULE_NAME = "asterion_bootstrap_lazy"
+
+
+def load_bootstrap():
+    """Import bootstrap.py on demand; cached under a stable module nickname."""
+    existing = sys.modules.get(_BOOTSTRAP_MODULE_NAME)
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location(
+        _BOOTSTRAP_MODULE_NAME, ROOT / "bootstrap.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_BOOTSTRAP_MODULE_NAME] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+bootstrap = None
 
 
 def completed(code=0, output="", error=""):
@@ -26,6 +42,8 @@ def completed(code=0, output="", error=""):
 
 class BootstrapTests(unittest.TestCase):
     def setUp(self):
+        global bootstrap
+        bootstrap = load_bootstrap()
         self.directory = tempfile.TemporaryDirectory(prefix="asterion launcher with spaces ")
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
@@ -214,6 +232,38 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("Permission", license_text)
         self.assertTrue((ROOT / "LICENSE").is_file())
         self.assertTrue((ROOT / "THIRD_PARTY_NOTICES.md").is_file())
+
+    def test_requirements_pin_matches_bootstrap(self):
+        pinned = load_bootstrap().PIN
+        lines = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        pins = [re.fullmatch(r"panda3d==(\S+)", line.strip()).group(1)
+                for line in lines if line.strip().startswith("panda3d==")]
+        self.assertEqual(len(pins), 1)
+        self.assertEqual(pins[0], pinned)
+
+    def test_manifest_entries_rehash_correctly(self):
+        manifest = ROOT / "MANIFEST.sha256"
+        self.assertTrue(manifest.is_file())
+        entries = 0
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            digest, _, name = line.partition("  ")
+            target = ROOT / name.strip()
+            self.assertTrue(target.is_file(), name)
+            actual = hashlib.sha256(target.read_bytes()).hexdigest()
+            self.assertEqual(actual, digest.strip(), name)
+            entries += 1
+        self.assertGreater(entries, 0)
+
+    def test_committed_reference_matches_generated_output(self):
+        from docs import build_reference
+        committed = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
+        build_reference.build()
+        rebuilt = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
+        if rebuilt != committed:
+            (ROOT / "docs" / "REFERENCE.md").write_text(committed, encoding="utf-8")
+        self.assertEqual(rebuilt, committed)
 
 
 if __name__ == "__main__":

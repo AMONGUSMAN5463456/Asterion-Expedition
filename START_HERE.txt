@@ -14,7 +14,7 @@ First launch installs Panda3D into a private environment beside the game.
 Internet is needed for that installation. Later launches and gameplay are offline.
 This is a source distribution; Python and a prebuilt game application are not included.
 
-Choose BEGIN EXPEDITION. H opens the field guide in the game.
+Choose BEGIN EXPEDITION. H opens in-game help.
 WASD moves, mouse looks, C scans, hold left mouse to mine.
 Tap Space to jump; hold it for jetpack. Ctrl brakes in the air;
 Space + Ctrl hovers. Settings adjusts FOV, camera motion and flight assist.

@@ -6,6 +6,7 @@ when its chunk unloads or a saved expedition is resumed.
 """
 from __future__ import annotations
 
+import copy
 from functools import lru_cache
 import math
 import random
@@ -42,14 +43,52 @@ def _seed(seed, cx, cy, salt=0):
     return (int(seed)*1664525 + int(cx)*73856093 + int(cy)*19349663 + salt*83492791) & 0xFFFFFFFF
 
 
-def _xyz(position):
+def _finite(value, fallback=0.0):
+    """Finite-float coercion; non-numeric/non-finite input yields fallback."""
     try:
-        value = tuple(float(position[i]) for i in range(3))
-        if all(math.isfinite(c) for c in value):
-            return value
-    except (TypeError, ValueError, IndexError, OverflowError):
-        pass
-    return (0.0,0.0,22.0)
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return number if math.isfinite(number) else fallback
+
+_PLANET_REQUIRED = ("id", "seed", "biome", "sky", "day_length", "accent")
+
+
+def _is_finite_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _validated_planet(planet):
+    """Shallow-validate a surface planet dict; raise ValueError, never KeyError."""
+    if not isinstance(planet, dict):
+        raise ValueError(f"planet must be a dict, got {type(planet).__name__}")
+    missing = [key for key in _PLANET_REQUIRED if key not in planet]
+    if missing:
+        raise ValueError(f"planet missing required keys: {', '.join(missing)}")
+    if not _is_finite_number(planet["seed"]):
+        raise ValueError(f"planet 'seed' must be a finite number, got {planet['seed']!r}")
+    if not _is_finite_number(planet["day_length"]):
+        raise ValueError(f"planet 'day_length' must be a finite number, got {planet['day_length']!r}")
+    for key in ("sky", "accent"):
+        value = planet[key]
+        if (not isinstance(value, (list, tuple)) or not value
+                or not all(_is_finite_number(c) for c in value)):
+            raise ValueError(f"planet {key!r} must hold finite numbers, got {value!r}")
+    return planet
+
+
+def _validated_system(system):
+    """Shallow-validate an orbit system dict; raise ValueError, never KeyError."""
+    if not isinstance(system, dict):
+        raise ValueError(f"system must be a dict, got {type(system).__name__}")
+    missing = [key for key in ("id", "planets") if key not in system]
+    if missing:
+        raise ValueError(f"system missing required keys: {', '.join(missing)}")
+    if not _is_finite_number(system["id"]):
+        raise ValueError(f"system 'id' must be a finite number, got {system['id']!r}")
+    if not isinstance(system["planets"], list):
+        raise ValueError(f"system 'planets' must be a list, got {type(system['planets']).__name__}")
+    return system
 
 
 def _box(name,center,size,heading=0):
@@ -196,9 +235,15 @@ class WorldRenderer:
         self._stars = None
         self._sky_dome = None
         self._water = None
+        self._fog = None
+        self._ripples = None
+        self._sun_visual = None
+        self._ground_detail = None
+        self._tree_models = None
+        self._grass_models = None
+        self._rock_models = None
         self._sample = lambda x,y: 20.0
         self._radius = 3
-        self._last_position = (0,0,22)
         self.collisions = CollisionWorld()
 
     def _start(self, mode):
@@ -229,12 +274,14 @@ class WorldRenderer:
         self._last_light = -100
 
     def load_surface(self, planet, state):
+        _validated_planet(planet)
         self._start("surface")
-        self.planet, self.state = dict(planet), state
+        self.planet, self.state = copy.deepcopy(planet), state
         self.system = None
         self._seed_value = int(planet["seed"])
         self._sample = lru_cache(maxsize=120000)(lambda x,y: terrain_height(self._seed_value,x,y))
         quality = getattr(state,"settings",{}).get("quality","medium")
+        # Loader and world map both accept "ultra" (radius 4); keep in sync.
         self._radius = {"low":2,"medium":3,"high":4,"ultra":4}.get(quality,3)
         self._depleted = set(getattr(state,"depleted",{}).get(planet["id"],[]))
         self._style = STYLES.get(planet["biome"],"mushroom")
@@ -264,7 +311,12 @@ class WorldRenderer:
         self.update(0,position,getattr(state,"elapsed",0),0)
 
     def height(self, x, y):
-        """Exact height of the rendered four-metre terrain triangles."""
+        """Exact height of the rendered four-metre terrain triangles.
+
+        Terrain diagonal convention ("a-c"): each grid cell splits along the
+        a-c diagonal, so _terrain_steps emits (a, b, c) and (a, c, d); the
+        interpolation below MUST use that same split to agree with vertices.
+        """
         try:
             x,y = float(x),float(y)
             if not math.isfinite(x) or not math.isfinite(y):
@@ -316,6 +368,9 @@ class WorldRenderer:
                 return result.value
 
     def _terrain_steps(self, ox, oy, size=CHUNK_SIZE, step=TERRAIN_STEP):
+        # Each vertex costs ~9 terrain_height evals (1 height + 4 normal + 4
+        # slope tint), all served by the lru_cached _sample; sharing samples
+        # across neighbours would change generator timing for no real gain.
         mesh=Mesh()
         n=int(size/step)
         rows=[]
@@ -722,8 +777,9 @@ class WorldRenderer:
         self._weather.hide()
 
     def load_orbit(self, system, state):
+        _validated_system(system)
         self._start("orbit")
-        self.system,self.state=dict(system),state
+        self.system,self.state=copy.deepcopy(system),state
         self.planet=None
         self._depleted=set(getattr(state,"depleted",{}).get(f"orbit:{system['id']}",[]))
         self._ambient.setColor((.22,.27,.36,1))
@@ -794,9 +850,8 @@ class WorldRenderer:
             self._spinners.append((node,rng.uniform(-1.1,1.1)))
             if entity_id in self._depleted:
                 self.set_depleted(entity_id)
-
     def interactables(self):
-        return list(self._entities.values())
+        return [dict(entity) for entity in self._entities.values()]
 
     def set_depleted(self,entity_id):
         self._depleted.add(entity_id)
@@ -811,8 +866,13 @@ class WorldRenderer:
         if not self.root or self.mode!="surface" or not isinstance(record,dict):
             return
         entity_id=record.get("id")
-        if not entity_id or entity_id in self._buildings:
+        if not entity_id:
             return
+        try:
+            if entity_id in self._buildings:
+                return
+        except TypeError:
+            raise ValueError(f"building id must be hashable, got {entity_id!r}")
         kind=record.get("kind","beacon")
         solid,glow=building_mesh(kind,self.planet["accent"])
         node=self.root.attachNewNode("constructed-"+kind)
@@ -820,7 +880,7 @@ class WorldRenderer:
         glow.node(kind+"-indicators",node,two_sided=True,unlit=True)
         pos=_xyz(record.get("pos",(0,0,20)))
         node.setPos(pos[0],pos[1],self.height(pos[0],pos[1]))
-        node.setH(float(record.get("heading",0)))
+        node.setH(_finite(record.get("heading",0)))
         self._buildings[entity_id]=node
         self._entities[entity_id]=dict(id=entity_id,kind="beacon",building_kind=kind,
             name={"beacon":"Expedition beacon","habitat":"Field habitat","solar":"Solar array", "extractor":"Mineral extractor"}.get(kind,kind),
@@ -831,8 +891,9 @@ class WorldRenderer:
     def update(self,dt,position,elapsed,storm=0):
         if not self.root or self.root.isEmpty():
             return
-        dt=max(0,min(.2,float(dt)))
-        elapsed=float(elapsed)
+        dt=max(0,min(.2,_finite(dt)))
+        elapsed=_finite(elapsed)
+        storm=_finite(storm)
         pos=_xyz(position)
         self._last_position=pos
         self.sky_root.setPos(*pos)
@@ -856,8 +917,7 @@ class WorldRenderer:
                 entity["node"].setPos(x,y,z)
                 entity["node"].setH(-math.degrees(t))
                 entity["node"].setR(math.sin(elapsed*2.8+data["phase"])*1.5)
-                entity["pos"]=(x,y,z+1.1*data["size"])
-            intensity=max(0,min(1,float(storm)))
+            intensity=max(0,min(1,storm))
             if intensity>.01:
                 self._weather.show()
                 self._weather.setPos(pos[0]+math.sin(elapsed*.15)*7,pos[1],pos[2]-(elapsed*8)%16)
@@ -920,4 +980,11 @@ class WorldRenderer:
         self._water=None
         self._stars=None
         self._sky_dome=None
+        self._fog=None
+        self._ripples=None
+        self._sun_visual=None
+        self._ground_detail=None
+        self._tree_models=None
+        self._grass_models=None
+        self._rock_models=None
         self._sample=lambda x,y:20.0

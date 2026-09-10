@@ -39,32 +39,41 @@ class AudioManager:
         self._last_played = {}
         self._destroyed = False
         self._engine_pitch = 0.85
+        self._failures = 0
+        if self.volume <= 0 or getattr(app, "no_audio", False):
+            return
         try:
             managers = getattr(app, "sfxManagerList", ())
             if not managers or not any(m.isValid() for m in managers):
                 return
             root = Path(__file__).resolve().parent.parent / "assets" / "audio"
             for name in (*self.EFFECTS, "surface", "space", "engine"):
-                path = root / (name + ".wav")
-                if not path.is_file():
+                try:
+                    path = root / (name + ".wav")
+                    if not path.is_file():
+                        continue
+                    # Filename.fromOsSpecific handles Windows drive letters as well.
+                    from panda3d.core import Filename
+                    sound = app.loader.loadSfx(Filename.fromOsSpecific(str(path)))
+                    if sound is None:
+                        continue
+                    if name in self.EFFECTS:
+                        sound.setVolume(self.volume * self.EFFECTS[name][0])
+                        self._effects[name] = sound
+                    else:
+                        sound.setLoop(True)
+                        sound.setVolume(0.0)
+                        sound.play()
+                        self._loops[name] = sound
+                except Exception:
+                    self._failures += 1
                     continue
-                # Filename.fromOsSpecific handles Windows drive letters as well.
-                from panda3d.core import Filename
-                sound = app.loader.loadSfx(Filename.fromOsSpecific(str(path)))
-                if sound is None:
-                    continue
-                if name in self.EFFECTS:
-                    sound.setVolume(self.volume * self.EFFECTS[name][0])
-                    self._effects[name] = sound
-                else:
-                    sound.setLoop(True)
-                    sound.setVolume(0.0)
-                    sound.play()
-                    self._loops[name] = sound
             self.enabled = bool(self._effects or self._loops)
         except Exception:
             # Sound is decoration.  Devices may disappear or fail to initialize.
-            self._silence()
+            self._failures += 1
+            if self._failures > 3:
+                self._silence()
 
     def play(self, name):
         if not self.enabled or self._destroyed or name not in self._effects:
@@ -78,7 +87,13 @@ class AudioManager:
             sound.setVolume(self.volume * gain)
             sound.play()
         except Exception:
-            self._silence()
+            self._failures += 1
+            try:
+                self._effects.pop(name, None)
+            except Exception:
+                pass
+            if self._failures > 3:
+                self._silence()
 
     def update(self, dt, mode, thrust=0):
         if self._destroyed:
@@ -100,25 +115,41 @@ class AudioManager:
         }
         fade = 1.0 - math.exp(-dt * 1.5)
         try:
-            for name, sound in self._loops.items():
-                self._levels[name] += (targets[name] - self._levels[name]) * fade
-                sound.setVolume(self._levels[name] * self.volume)
+            for name, sound in list(self._loops.items()):
+                try:
+                    self._levels[name] += (targets[name] - self._levels[name]) * fade
+                    sound.setVolume(self._levels[name] * self.volume)
+                except Exception:
+                    self._failures += 1
+                    try:
+                        sound.stop()
+                    except Exception:
+                        pass
+                    self._loops.pop(name, None)
             engine = self._loops.get("engine")
             if engine is not None:
                 self._engine_pitch += (0.85 + thrust * 0.6 - self._engine_pitch) * fade
                 engine.setPlayRate(self._engine_pitch)
         except Exception:
-            self._silence()
+            self._failures += 1
+            if self._failures > 3:
+                self._silence()
 
     def set_volume(self, value):
         self.volume = _bounded(value, self.volume)
+        if self.volume <= 0:
+            self._silence()
+            return
         try:
             for name, sound in self._effects.items():
                 sound.setVolume(self.volume * self.EFFECTS[name][0])
             for name, sound in self._loops.items():
                 sound.setVolume(self.volume * self._levels[name])
         except Exception:
-            self._silence()
+            self._failures += 1
+            if self._failures > 3:
+                self._silence()
+
 
     def _silence(self):
         for sound in (*self._effects.values(), *self._loops.values()):

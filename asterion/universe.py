@@ -104,6 +104,8 @@ def terrain_height(seed, x, y):
     This exact function is shared by world meshing and movement. The central
     42-unit disk is 20 units above datum; all ocean water is below that height.
     No random state or Python hash seed participates in the sample.
+    Unparseable seeds coerce to UNIVERSE_SEED (documented default); valid
+    seeds keep the exact historical ``(int(seed) % 99991) * .00173`` phase.
     """
     try:
         x, y = float(x), float(y)
@@ -114,9 +116,11 @@ def terrain_height(seed, x, y):
     # Limit enormous input before trigonometry; ordinary play is unaffected.
     x, y = max(-1e7, min(1e7, x)), max(-1e7, min(1e7, y))
     try:
+        if isinstance(seed, bool):
+            raise ValueError("bool seed coerces to default")
         phase = (int(seed) % 99991) * .00173
     except (TypeError, ValueError, OverflowError):
-        phase = 0.0
+        phase = (UNIVERSE_SEED % 99991) * .00173
     broad = 9.2 * math.sin(x * .0062 + phase) * math.cos(y * .0071 - phase * .73)
     ridges = 6.0 * math.sin((x + y) * .012 + phase * 1.3)
     rolling = 3.0 * math.cos(x * .031 - y * .018 + phase * .5)

@@ -12,19 +12,33 @@ import tempfile
 import traceback
 
 
+def _positive_frames(value: str) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("--frames must be an integer >= 1")
+    if number < 1:
+        raise argparse.ArgumentTypeError("--frames must be >= 1")
+    return number
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Asterion Expedition — procedural space exploration")
     parser.add_argument("--smoke-test", action="store_true", help="Run isolated offscreen gameplay checks")
     parser.add_argument("--offscreen", action="store_true", help="Render without a desktop window")
     parser.add_argument("--software", action="store_true", help="Use the software renderer")
     parser.add_argument("--screenshot", type=Path, help="Save the last rendered frame as a PNG")
-    parser.add_argument("--frames", type=int, default=0, help="Exit after this many frames")
+    parser.add_argument("--frames", type=_positive_frames, default=0, help="Exit after this many frames (>= 1)")
     parser.add_argument("--scene", choices=("surface", "orbit"), default="surface")
     parser.add_argument("--panel", choices=("inventory", "craft", "map", "journal", "build", "help", "settings"))
     parser.add_argument("--autostart", action="store_true", help="Start a fresh expedition immediately")
     parser.add_argument("--save-dir", type=Path, help="Override the normal per-user save directory")
     parser.add_argument("--no-audio", action="store_true")
     args = parser.parse_args()
+    if args.smoke_test and args.save_dir:
+        parser.error("--smoke-test runs in an isolated temporary directory and cannot be combined with --save-dir")
+    if args.screenshot is not None and not (args.frames or args.offscreen or args.smoke_test):
+        parser.error("--screenshot requires --frames or --offscreen; a windowed interactive run would ignore it")
     try:
         from panda3d.core import loadPrcFileData
     except ImportError:
@@ -46,7 +60,7 @@ def main() -> int:
         config.append("window-type offscreen")
     loadPrcFileData("asterion", "\n".join(config))
     from asterion.app import ExpeditionApp
-    temporary = tempfile.TemporaryDirectory(prefix="asterion-qa-") if args.smoke_test and not args.save_dir else None
+    temporary = tempfile.TemporaryDirectory(prefix="asterion-qa-") if args.smoke_test else None
     app = None
     try:
         app = ExpeditionApp(save_dir=args.save_dir or (Path(temporary.name) if temporary else None),
@@ -61,7 +75,7 @@ def main() -> int:
         if args.panel:
             app.open_panel(args.panel)
         if args.frames or offscreen:
-            count = max(3, min(args.frames or 12, 36000))
+            count = min(args.frames or 12, 36000)
             for _ in range(count):
                 app.step(1 / 60)
                 app.graphicsEngine.renderFrame()
@@ -78,8 +92,9 @@ def main() -> int:
         print(details, file=sys.stderr)
         if app is not None:
             try:
-                (app.save_dir / "crash.log").write_text(details, encoding="utf-8")
-                print(f"Error details: {app.save_dir / 'crash.log'}", file=sys.stderr)
+                crash_path = Path.cwd() / "asterion-smoke-crash.log" if temporary else (app.save_dir / "crash.log")
+                crash_path.write_text(details, encoding="utf-8")
+                print(f"Error details: {crash_path}", file=sys.stderr)
             except OSError:
                 pass
         return 1

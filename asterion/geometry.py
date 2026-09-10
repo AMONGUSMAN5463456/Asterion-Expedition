@@ -17,15 +17,26 @@ TAU = math.tau
 
 
 def rgba(color, alpha=1.0):
+    if len(color) < 3:
+        raise ValueError("color sequence must have at least 3 components")
     return tuple(color[:3]) + (color[3] if len(color) > 3 else alpha,)
 
 
 def shade(color, factor):
+    if len(color) < 3:
+        raise ValueError("color sequence must have at least 3 components")
+    if not math.isfinite(factor):
+        factor = 1.0
     return tuple(max(0.0, min(1.0, c * factor)) for c in color[:3]) + (rgba(color)[3],)
 
 
 def mix(a, b, t):
-    t = max(0.0, min(1.0, t))
+    if len(a) < 3 or len(b) < 3:
+        raise ValueError("color sequence must have at least 3 components")
+    if not math.isfinite(t):
+        t = 0.0
+    else:
+        t = max(0.0, min(1.0, t))
     aa, bb = rgba(a), rgba(b)
     return tuple(aa[i] * (1.0 - t) + bb[i] * t for i in range(4))
 
@@ -102,11 +113,15 @@ class Mesh:
         grid = []
         for j in range(rings + 1):
             lat = -math.pi*.5 + math.pi*j/rings
+            pole = (j == 0 or j == rings)
+            # One shared radius per pole row: independent offsets per segment
+            # would splay the pole into a pinhole fan.
+            pole_r = 1 + roughness*(rng.random() - .5) if pole else 1.0
             row = []
             for i in range(segments + 1):
                 lon = TAU*(i % segments)/segments
                 n = (math.cos(lat)*math.cos(lon), math.cos(lat)*math.sin(lon), math.sin(lat))
-                r = 1 + roughness*(rng.random() - .5)
+                r = pole_r if pole else 1 + roughness*(rng.random() - .5)
                 point = tuple(center[k] + n[k]*size[k]*r for k in range(3))
                 col = color_fn(n) if color_fn else shade(color, .92 + rng.random()*.14)
                 row.append((point, n, col))
@@ -151,8 +166,10 @@ class Mesh:
             scale = (scale,)*3
         ca, sa = math.cos(math.radians(heading)), math.sin(math.radians(heading))
         sx, sy, sz = scale
+        if min(abs(sx), abs(sy), abs(sz)) < 1e-9:
+            return
         px, py, pz = pos
-        nsx, nsy, nsz = max(abs(sx), 1e-9), max(abs(sy), 1e-9), max(abs(sz), 1e-9)
+        nsx, nsy, nsz = abs(sx), abs(sy), abs(sz)
         normal = Vec3()
         if other.texcoords and not self.texcoords:
             self.texcoords.extend(((0,0),)*len(self.vertices))

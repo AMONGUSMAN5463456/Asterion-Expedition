@@ -100,6 +100,13 @@ def prepare_environment():
     if package.returncode or package.stdout.strip() != PIN:
         say("First-run setup: downloading Panda3D %s from pypi.org." % PIN)
         say("An internet connection is needed for this step only.")
+        # NOTE: --isolated intentionally ignores environment configuration
+        # (PIP_* variables, user config, and proxy variables such as
+        # HTTPS_PROXY). Behind a proxy this pass-through install cannot use
+        # those settings; configure proxy access outside --isolated or
+        # install the pinned wheel manually, then launch again.
+        # No hash enforcement is added: wheel hashes cannot be verified
+        # offline, and a failed check must never break installation.
         install = run([
             str(ENV_PYTHON), "-m", "pip", "--isolated", "install",
             "--index-url", "https://pypi.org/simple", "--only-binary=:all:", "--no-deps",
@@ -110,7 +117,10 @@ def prepare_environment():
                 "Panda3D installation failed. Check your internet connection "
                 "and the pip message above. Use 64-bit Python 3.10–3.14 on "
                 "a supported desktop platform, then run this launcher again. "
-                "The launcher never installs an unpinned fallback version."
+                "The launcher never installs an unpinned fallback version. "
+                "Note: pip runs --isolated, so proxy variables and PIP_* "
+                "settings are not passed through; behind a proxy, install "
+                "panda3d==" + PIN + " manually first."
             )
     check = run([str(ENV_PYTHON), "-c", "from panda3d.core import PandaSystem; print(PandaSystem.getVersionString())"],
                 capture_output=True, text=True)

@@ -110,6 +110,7 @@ class AmbientOcclusion:
         self.projection = None
         self.quads = []
         self.viewport_size = None
+        self.closed = False
         try:
             color, depth, ao = (Texture(name) for name in ("ao-color", "ao-depth", "ao-shading"))
             for texture in (color, depth, ao):
@@ -136,7 +137,13 @@ class AmbientOcclusion:
             raise
 
     def update(self):
-        scene, shading = self.manager.buffers
+        try:
+            scene, shading = self.manager.buffers
+        except (ValueError, TypeError, AttributeError) as exc:
+            import sys as _sys
+            print(f"Ambient occlusion disabled: {exc}", file=_sys.stderr)
+            self.cleanup()
+            raise RuntimeError(f"Ambient occlusion unavailable: {exc}")
         size = (scene.getXSize(), scene.getYSize())
         if self.viewport_size != size:
             self.viewport_size = size
@@ -153,6 +160,15 @@ class AmbientOcclusion:
                 quad.setShaderInput("depth_range", self.lens.getNear(), self.lens.getFar())
 
     def cleanup(self):
-        self.manager.cleanup()
-        self.manager.ignoreAll()
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.manager.cleanup()
+        except Exception:
+            pass
+        try:
+            self.manager.ignoreAll()
+        except Exception:
+            pass
         self.quads.clear()

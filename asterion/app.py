@@ -44,6 +44,13 @@ def quantity_text(items) -> str:
     return "  /  ".join(f"{ITEMS.get(k, {}).get('name', k.replace('_', ' ').title())} {v}" for k, v in items.items()) or "No materials required"
 
 
+_KNOWN_PANELS = frozenset({
+    "inventory", "craft", "upgrades", "map", "galaxy", "journal",
+    "discoveries", "contracts", "build", "trade", "signal",
+    "settings", "help", "pause", "rescue", "reload", "new_confirm",
+})
+
+
 class ExpeditionApp(ShowBase):
     """One independent local expedition and all its rendered views."""
 
@@ -109,14 +116,16 @@ class ExpeditionApp(ShowBase):
         if not offscreen:
             self.taskMgr.add(self._frame, "expedition-update")
 
-    def _apply_ambient_occlusion(self):
-        enabled = (self._ao_available and self.game.mode == "surface"
-                   and self.game.settings.get("ambient_occlusion", True))
         if enabled == (self._ao_filters is not None):
             return
         if not enabled:
-            self._ao_filters.cleanup()
-            self._ao_filters = None
+            try:
+                if self._ao_filters is not None:
+                    self._ao_filters.cleanup()
+            except Exception as exc:
+                print(f"Ambient occlusion disabled: {exc}", file=sys.stderr)
+            finally:
+                self._ao_filters = None
             return
         try:
             self._ao_filters = AmbientOcclusion(self.win, self.cam)
@@ -350,14 +359,6 @@ class ExpeditionApp(ShowBase):
         self.autosave_time = 0
         return ok
 
-    def quit_game(self):
-        if self._quitting:
-            return
-        self._quitting = True
-        self.save_game(announce=False)
-        self.taskMgr.stop()
-        self.userExit()
-
     def close_panel(self):
         self.ui.hide_panel()
         self.current_panel = ""
@@ -380,10 +381,25 @@ class ExpeditionApp(ShowBase):
         if not self.started:
             self.ui.show_title(self.save_path.exists())
             self.current_panel = "title"
+        elif self.current_panel == "pause":
+            return
         elif self.ui.panel_open:
             self.close_panel()
         else:
             self.open_panel("pause")
+
+    def quit_game(self):
+        """Save and request exit. Paired with main.py's ``finally: app.cleanup()``.
+
+        ``cleanup()`` itself is idempotent, so the ``finally`` in ``main.py``
+        always runs even if ``quit_game`` already saved state here.
+        """
+        if self._quitting:
+            return
+        self._quitting = True
+        self.save_game(announce=False)
+        self.taskMgr.stop()
+        self.userExit()
 
     def transition_to(self, callback, message):
         if self.transition:
@@ -631,16 +647,18 @@ class ExpeditionApp(ShowBase):
         self.toast("No recharge needed or no compatible supplies. K crafts gel, ion cells and fuel; I shows cargo.")
 
     def _mine(self, dt):
-        self._clear_beam()
         entity = self.target
         if not self.controller.mouse_down or not entity or entity["kind"] not in ("mineral", "flora", "asteroid"):
+            self._clear_beam()
             self.mine_time = 0
             self.mine_id = ""
             return
         if self.controller.mode == "flight":
+            self._clear_beam()
             return
         max_range = 1000 if entity["kind"] == "asteroid" else 38
         if self.target_distance > max_range:
+            self._clear_beam()
             self.mine_time = 0
             return
         if self.mine_id != entity["id"]:
@@ -653,9 +671,14 @@ class ExpeditionApp(ShowBase):
         line.setColor(.15, .95, 1, 1)
         line.moveTo(start)
         line.drawTo(end)
-        self.beam = self.render.attachNewNode(line.create())
-        self.beam.setLightOff()
-        self.beam.setFogOff()
+        if self.beam is None:
+            self.beam = self.render.attachNewNode("mining-beam")
+            self.beam.setLightOff()
+            self.beam.setFogOff()
+        else:
+            for child in self.beam.getChildren():
+                child.removeNode()
+        self.beam.attachNewNode(line.create())
         duration = max(.25, float(entity.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35))
         previous = self.mine_time
         self.mine_time += dt
@@ -876,7 +899,12 @@ class ExpeditionApp(ShowBase):
                             boosting=self.controller.boosting, braking=self.controller.braking,
                             collision_feedback=self.controller.collision_feedback)
         if self._ao_filters is not None:
-            self._ao_filters.update()
+            try:
+                self._ao_filters.update()
+            except RuntimeError as exc:
+                print(f"Ambient occlusion disabled: {exc}", file=sys.stderr)
+                self._ao_filters = None
+                self._ao_available = False
         self.hud_time += dt
         if self.hud_time >= 1 / 20:
             self.hud_time = 0
@@ -941,16 +969,15 @@ class ExpeditionApp(ShowBase):
     def button(label, action, payload=None, enabled=True):
         return {"label": label, "action": action, "payload": payload, "enabled": enabled}
 
-    def _tabs(self, active):
-        return [{"label": title, "action": "open", "payload": key, "active": active == key}
-                for key, title in (("inventory", "CARGO"), ("craft", "FABRICATOR"), ("map", "NAVIGATION"),
-                                   ("journal", "EXPEDITION"), ("build", "CONSTRUCTION"))]
-
     def open_panel(self, kind, context=None):
         if self.transition:
             return
+        if kind not in _KNOWN_PANELS:
+            self.toast(f"Unknown panel: {kind}", "alert")
+            return
         if not self.started and kind not in ("help", "settings", "new_confirm"):
             return
+
         self.controller.set_enabled(False)
         self.controller.reset_keys()
         self._clear_beam()
@@ -1199,7 +1226,14 @@ class ExpeditionApp(ShowBase):
                 self.toast(f"Discarded 1 {ITEMS.get(payload, {}).get('name', payload)}")
             self._refresh_panel()
         elif action in ("buy", "sell") and self.started and self.current_panel == "trade":
-            ok, message = self.game.trade(payload["item"], payload["amount"], action == "buy")
+            if not isinstance(payload, dict):
+                self.toast("Choose a valid material and a positive whole quantity.", "alert")
+                return
+            item, amount = payload.get("item"), payload.get("amount")
+            if item not in ITEMS or isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+                self.toast("Choose a valid material and a positive whole quantity.", "alert")
+                return
+            ok, message = self.game.trade(item, amount, action == "buy")
             self.toast(message, "collect" if ok else "alert")
             self._refresh_panel()
         elif action == "waypoint" and self.started:
@@ -1349,17 +1383,56 @@ class ExpeditionApp(ShowBase):
         if self.cleaned:
             return
         self.cleaned = True
-        self.ignoreAll()
-        self.taskMgr.remove("expedition-update")
-        if self._ao_filters is not None:
-            self._ao_filters.cleanup()
-            self._ao_filters = None
-        self._clear_beam()
-        self._remove_ship()
-        self.controller.destroy()
-        self.effects.destroy()
-        self.ui.destroy()
-        self.audio.destroy()
-        self.world.destroy()
-        self.fade.removeNode()
-        self.destroy()
+        try:
+            try:
+                self.ignoreAll()
+            except Exception:
+                pass
+            try:
+                self.taskMgr.remove("expedition-update")
+            except Exception:
+                pass
+            try:
+                if self._ao_filters is not None:
+                    self._ao_filters.cleanup()
+            except Exception as exc:
+                print(f"Ambient occlusion disabled: {exc}", file=sys.stderr)
+            finally:
+                self._ao_filters = None
+            try:
+                self._clear_beam()
+            except Exception:
+                pass
+            try:
+                self._remove_ship()
+            except Exception:
+                pass
+            try:
+                self.controller.destroy()
+            except Exception:
+                pass
+            try:
+                self.effects.destroy()
+            except Exception:
+                pass
+            try:
+                self.ui.destroy()
+            except Exception:
+                pass
+            try:
+                self.audio.destroy()
+            except Exception:
+                pass
+            try:
+                self.world.destroy()
+            except Exception:
+                pass
+            try:
+                self.fade.removeNode()
+            except Exception:
+                pass
+        finally:
+            try:
+                self.destroy()
+            except Exception:
+                pass
