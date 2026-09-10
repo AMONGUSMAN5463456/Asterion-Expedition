@@ -1,7 +1,9 @@
 """World continuity and geometry checks; no window or graphics driver required."""
+from itertools import count
 import math
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from panda3d.core import NodePath
 
@@ -124,6 +126,67 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(host.render.getNumChildren(),0)
         self.assertEqual(world.interactables(),[])
         host.render.removeNode()
+
+
+class IncrementalStreamingTests(unittest.TestCase):
+    def setUp(self):
+        self.app=SceneHost()
+        self.world=WorldRenderer(self.app)
+        self.addCleanup(self.app.render.removeNode)
+        self.addCleanup(self.world.destroy)
+        self.world.load_surface(get_planet(0,0),state())
+        self.world._radius=0
+
+    def test_cancel_partial_chunk_removes_collision_and_preserves_depletion(self):
+        world=self.world
+        position=(12*CHUNK_SIZE,11*CHUNK_SIZE,22)
+        with patch("asterion.world.time.perf_counter",side_effect=count(0,.01)):
+            for _ in range(2000):
+                world._stream(position)
+                chunk=world.chunks[(12,11)]
+                if chunk["ids"]:
+                    break
+            else:
+                self.fail("Incremental chunk did not produce a resource")
+            root=chunk["root"]
+            target=chunk["ids"][0]
+            group=chunk["collision_group"]
+            self.assertIn(group,world.collisions._groups)
+            world.set_depleted(target)
+            world._stream((32*CHUNK_SIZE,31*CHUNK_SIZE,22))
+        self.assertTrue(root.isEmpty())
+        self.assertNotIn(group,world.collisions._groups)
+        self.assertNotIn(target,world.collisions._groups)
+        self.assertNotIn(target,{entity["id"] for entity in world.interactables()})
+        world._stream(position,initial=True)
+        self.assertNotIn(target,{entity["id"] for entity in world.interactables()})
+        self.assertTrue(all(not entity["node"].isEmpty() for entity in world.interactables()))
+        self.assertIn(group,world.collisions._groups)
+
+    def test_horizon_replacement_and_world_change_cancel_pending_work(self):
+        world=self.world
+        old=world._far_terrain
+        with patch("asterion.world.time.perf_counter",side_effect=count(0,.01)):
+            world._make_far_terrain((300,0,22))
+            self.assertEqual(world._far_terrain,old)
+            world._make_far_terrain((800,0,22))
+            self.assertFalse(old.isEmpty())
+        world._make_far_terrain((800,0,22),initial=True)
+        self.assertTrue(old.isEmpty())
+        low,high=world._far_terrain.getTightBounds()
+        self.assertEqual((low.x,high.x),(-256,1792))
+        with patch("asterion.world.time.perf_counter",side_effect=count(0,.01)):
+            world._stream((12*CHUNK_SIZE,11*CHUNK_SIZE,22))
+            world._make_far_terrain((1200,0,22))
+        root=world.root
+        world.load_orbit(generate_system(2),state())
+        world.update(.1,(0,0,0),1)
+        self.assertTrue(root.isEmpty())
+        self.assertEqual(self.app.render.getNumChildren(),1)
+        self.assertTrue(all(":c" not in entity["id"] for entity in world.interactables()))
+        world.destroy()
+        self.assertEqual(self.app.render.getNumChildren(),0)
+        self.assertEqual(world.collisions.shape_count,0)
 
 
 if __name__=="__main__":

@@ -168,18 +168,31 @@ class Mesh:
             self.colors.append(color)
 
     def node(self, name="mesh", parent=None, two_sided=False, unlit=False):
+        steps = self._node_steps(name, parent, two_sided, unlit)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as result:
+                return result.value
+
+    def _node_steps(self, name="mesh", parent=None, two_sided=False, unlit=False):
+        """Fill bounded vertex batches; attach only when the geometry is complete."""
         fmt=GeomVertexFormat.getV3n3c4t2() if self.texcoords else GeomVertexFormat.getV3n3c4()
         data = GeomVertexData(name, fmt, Geom.UHStatic)
         data.setNumRows(len(self.vertices))
         vertex, normal, color = (GeomVertexWriter(data, field) for field in ("vertex", "normal", "color"))
-        for p, n, c in zip(self.vertices, self.normals, self.colors):
+        for index, (p, n, c) in enumerate(zip(self.vertices, self.normals, self.colors)):
             vertex.addData3f(*p)
             normal.addData3f(*n)
             color.addData4f(*c)
+            if index % 256 == 255:
+                yield
         if self.texcoords:
             uv=GeomVertexWriter(data,"texcoord")
-            for coord in self.texcoords:
+            for index, coord in enumerate(self.texcoords):
                 uv.addData2f(*coord)
+                if index % 256 == 255:
+                    yield
         triangles = GeomTriangles(Geom.UHStatic)
         if self.vertices:
             triangles.addConsecutiveVertices(0, len(self.vertices))

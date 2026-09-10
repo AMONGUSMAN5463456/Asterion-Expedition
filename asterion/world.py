@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 import math
 import random
+import time
 
 from panda3d.core import (
     AmbientLight, DirectionalLight, Fog, Material, NodePath, TransparencyAttrib, Vec3,
@@ -185,9 +186,12 @@ class WorldRenderer:
         self._buildings = {}
         self._chunk_queue = []
         self._chunk_center = None
+        self._chunk_job = None
+        self._chunk_key = None
         self._last_light = -100
         self._far_center = None
         self._far_terrain = None
+        self._far_job = None
         self._weather = None
         self._stars = None
         self._sky_dome = None
@@ -254,7 +258,7 @@ class WorldRenderer:
         position = _xyz(getattr(state,"position",(0,0,22)))
         self._last_position = position
         self._stream(position,initial=True)
-        self._make_far_terrain(position)
+        self._make_far_terrain(position,initial=True)
         for record in getattr(state,"bases",{}).get(planet["id"],[]):
             self.add_building(record)
         self.update(0,position,getattr(state,"elapsed",0),0)
@@ -304,6 +308,14 @@ class WorldRenderer:
         return col
 
     def _terrain_mesh(self, ox, oy, size=CHUNK_SIZE, step=TERRAIN_STEP):
+        steps=self._terrain_steps(ox,oy,size,step)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as result:
+                return result.value
+
+    def _terrain_steps(self, ox, oy, size=CHUNK_SIZE, step=TERRAIN_STEP):
         mesh=Mesh()
         n=int(size/step)
         rows=[]
@@ -314,6 +326,7 @@ class WorldRenderer:
                 z=self._sample(x,y)
                 row.append(((x,y,z),self._normal(x,y),self._ground_color(x,y,z)))
             rows.append(row)
+            yield
         for j in range(n):
             for i in range(n):
                 a,b,c,d=rows[j][i],rows[j][i+1],rows[j+1][i+1],rows[j+1][i]
@@ -321,21 +334,34 @@ class WorldRenderer:
                     mesh.tri(*(p[0] for p in triangle), (1,1,1),
                              normals=tuple(p[1] for p in triangle),colors=tuple(p[2] for p in triangle),
                              texcoords=tuple((p[0][0]/12,p[0][1]/12) for p in triangle))
+            yield
         return mesh
 
-    def _make_far_terrain(self, position):
-        # Low-detail horizon tiles cover streaming gaps and remain useful from
-        # the cockpit.  Near chunks sit directly on this same height function.
+    def _make_far_terrain(self, position, initial=False):
         center=(math.floor(position[0]/256)*256,math.floor(position[1]/256)*256)
-        if center == self._far_center:
-            return
+        if center != self._far_center:
+            if self._far_job is not None:
+                self._far_job.close()
+            self._far_center=center
+            self._far_job=self._build_far_terrain(center)
+        deadline=time.perf_counter()+.002
+        while self._far_job is not None:
+            try:
+                next(self._far_job)
+            except StopIteration:
+                self._far_job=None
+            if not initial and time.perf_counter()>=deadline:
+                break
+
+    def _build_far_terrain(self, center):
+        # Keep the old horizon visible until its replacement is ready.
+        mesh=yield from self._terrain_steps(center[0]-1024,center[1]-1024,2048,32)
+        node=yield from mesh._node_steps("distant-landscape",self.root)
+        node.setTexture(self._ground_detail)
+        node.setZ(-4.0)
         if self._far_terrain:
             self._far_terrain.removeNode()
-        self._far_center=center
-        mesh=self._terrain_mesh(center[0]-1024,center[1]-1024,2048,32)
-        self._far_terrain=mesh.node("distant-landscape",self.root)
-        self._far_terrain.setTexture(self._ground_detail)
-        self._far_terrain.setZ(-4.0)
+        self._far_terrain=node
 
     def _stream(self, position, initial=False):
         center=(math.floor(position[0]/CHUNK_SIZE),math.floor(position[1]/CHUNK_SIZE))
@@ -345,6 +371,10 @@ class WorldRenderer:
             wanted={(cx+dx,cy+dy) for dx in range(-self._radius,self._radius+1)
                     for dy in range(-self._radius,self._radius+1)
                     if dx*dx+dy*dy <= (self._radius+.5)**2}
+            if self._chunk_job is not None and self._chunk_key not in wanted:
+                self._chunk_job.close()
+                self._chunk_job=None
+                self._chunk_key=None
             for key in list(self.chunks):
                 if key not in wanted:
                     chunk=self.chunks.pop(key)
@@ -356,10 +386,20 @@ class WorldRenderer:
                     chunk["root"].removeNode()
             self._chunk_queue=sorted(wanted-set(self.chunks),
                                      key=lambda p:(p[0]-cx)**2+(p[1]-cy)**2)
-        # One chunk per frame amortises traversal without changing identifiers.
-        budget=len(self._chunk_queue) if initial else 1
-        for _ in range(min(budget,len(self._chunk_queue))):
-            self._make_chunk(*self._chunk_queue.pop(0))
+        # A chunk spans multiple frames; each yield leaves visible geometry and
+        # its collision together. Initial loading still finishes synchronously.
+        deadline=time.perf_counter()+.004
+        while self._chunk_job is not None or self._chunk_queue:
+            if self._chunk_job is None:
+                self._chunk_key=self._chunk_queue.pop(0)
+                self._chunk_job=self._make_chunk(*self._chunk_key)
+            try:
+                next(self._chunk_job)
+            except StopIteration:
+                self._chunk_job=None
+                self._chunk_key=None
+            if not initial and time.perf_counter()>=deadline:
+                break
 
     def _in_clearance(self,x,y,padding=0):
         # Keep the landing pad, kiosk and the ancient halo approachable.
@@ -374,7 +414,8 @@ class WorldRenderer:
         collision_group=f"chunk:{cx},{cy}"
         collision_shapes=[]
         self.chunks[key]={"root":node,"ids":ids,"collision_group":collision_group}
-        ground=self._terrain_mesh(cx*CHUNK_SIZE,cy*CHUNK_SIZE).node("ground",node)
+        mesh=yield from self._terrain_steps(cx*CHUNK_SIZE,cy*CHUNK_SIZE)
+        ground=yield from mesh._node_steps("ground",node)
         ground.setTexture(self._ground_detail)
         rng=random.Random(_seed(self._seed_value,cx,cy))
         remote=(cx%7==3 and cy%7==4 and abs(cx)+abs(cy)>4)
@@ -397,12 +438,14 @@ class WorldRenderer:
             decor.add(self._tree_models[i%3],(x,y,z-.05),scale,heading)
             collision_shapes.extend(_placed_shapes(_flora_shapes(self._style,self._seed_value+i%3),
                 f"{self.planet['id']}:c{cx},{cy}:tree{i}",(x,y,z-.05),heading,scale))
+            yield
         for i in range(int(34*abundance)):
             x,y=(cx+rng.random())*CHUNK_SIZE,(cy+rng.random())*CHUNK_SIZE
             z=self.height(x,y)
             if clearance(x,y) or z<self.planet["water_level"]:
                 continue
             decor.add(self._grass_models[i%3],(x,y,z),rng.uniform(.65,1.7),rng.uniform(0,360))
+            yield
         for i in range(9):
             x,y=(cx+rng.random())*CHUNK_SIZE,(cy+rng.random())*CHUNK_SIZE
             z=self.height(x,y)
@@ -413,8 +456,10 @@ class WorldRenderer:
             if scale>.62:
                 collision_shapes.extend(_placed_shapes([_cylinder("stone",(.12,0,.53),.84,1.35)],
                     f"{self.planet['id']}:c{cx},{cy}:rock{i}",(x,y,z-.15),heading,scale))
-        decor.node("batched-flora-and-stones",node,two_sided=True)
+            yield
+        yield from decor._node_steps("batched-flora-and-stones",node,two_sided=True)
         self.collisions.set_group(collision_group,collision_shapes)
+        yield
         resources=self.planet["resources"]
         for i in range(7):
             x,y=(cx+.13+rng.random()*.74)*CHUNK_SIZE,(cy+.13+rng.random()*.74)*CHUNK_SIZE
@@ -424,20 +469,23 @@ class WorldRenderer:
             entity_id=f"{self.planet['id']}:c{cx},{cy}:r{i}"
             if self._resource(entity_id,resource,x,y,_seed(self._seed_value,cx,cy,i+1),node):
                 ids.append(entity_id)
+            yield
         if rng.random()<.34*float(self.planet.get("fauna_density",1)):
             x,y=(cx+.5)*CHUNK_SIZE,(cy+.5)*CHUNK_SIZE
             if not clearance(x,y,5) and self.height(x,y)>self.planet["water_level"]+1:
                 entity_id=f"{self.planet['id']}:c{cx},{cy}:fauna"
                 self._make_fauna(entity_id,x,y,_seed(self._seed_value,cx,cy,49),node)
                 ids.append(entity_id)
+                yield
         if remote:
             kind="outpost" if _seed(self._seed_value,cx,cy)%3==0 else "ruin"
             meshes=outpost_mesh(self.planet["accent"]) if kind=="outpost" else ruin_mesh(self.planet["accent"])
-            landmark=node.attachNewNode("remote-"+kind)
-            meshes[0].node("structure",landmark,two_sided=True)
-            meshes[1].node("signal-lights",landmark,two_sided=True,unlit=True)
+            landmark=NodePath("remote-"+kind)
+            yield from meshes[0]._node_steps("structure",landmark,two_sided=True)
+            yield from meshes[1]._node_steps("signal-lights",landmark,two_sided=True,unlit=True)
             z=self.height(rx,ry)
             landmark.setPos(rx,ry,z)
+            landmark.reparentTo(node)
             landmark.setH((_seed(self._seed_value,cx,cy)%4)*90)
             entity_id=f"{self.planet['id']}:c{cx},{cy}:{kind}"
             self._entities[entity_id]=dict(id=entity_id,kind=kind,
@@ -842,6 +890,13 @@ class WorldRenderer:
                 node.setH(node.getH()+dt*speed)
 
     def destroy(self):
+        if self._chunk_job is not None:
+            self._chunk_job.close()
+            self._chunk_job=None
+        self._chunk_key=None
+        if self._far_job is not None:
+            self._far_job.close()
+            self._far_job=None
         self.collisions.clear()
         for light in self._lights:
             if not light.isEmpty():

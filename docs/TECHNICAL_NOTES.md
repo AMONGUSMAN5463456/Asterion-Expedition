@@ -78,15 +78,38 @@ Cached and uncached 1280×720 HUD captures were pixel-identical.
 `Mesh.add` calculates scale-dependent normal divisors once per mesh placement,
 uses direct component arithmetic instead of per-vertex generators, and reuses
 one temporary Panda3D normal vector. Vertex order, transforms, normal
-normalization, colours, UV padding, and chunk scheduling are unchanged.
+normalization, colours, and UV padding are unchanged.
 
 On Python 3.14, five unprofiled batches of 100 representative flora, rock, and
 crystal transforms had median times of 279 ms before and 137 ms after. Across
 36 placements, including non-uniform, negative, and zero scales, all generated
 vertices, normals, colours, and UVs exactly matched the previous implementation.
 A 240-frame headless surface traversal generating 35 chunks reduced profiled
-chunk-generation time from 7.89 to 4.83 seconds. These CPU measurements include
-no GPU performance claim; synchronous chunk generation can still cause hitches.
+chunk-generation time from 7.89 to 4.83 seconds before time slicing was added.
+These CPU measurements include no GPU performance claim.
+
+## Streaming frame pacing
+
+Traversal uses cooperative generators with a 4 ms chunk-work budget and a
+separate 2 ms distant-terrain budget per update. Terrain generation yields per
+row, decoration placement per model, and vertex-buffer filling every 256 rows.
+Budgets are checked between work units, not enforced as hard frame deadlines:
+individual resource/landmark generation, collision registration, allocation,
+unloading, rendering, and other gameplay work can still take additional time.
+
+Initial surface loading remains synchronous. During traversal, a chunk becomes
+visible in stages; each completed decoration/resource is registered with its
+collision before the next yield. Geometry buffers attach only after completion.
+The old horizon remains visible until its replacement is ready. Moving away
+cancels unfinished chunk work before unloading its nodes and collision groups;
+world destruction closes both pending generators. Depletion remains persistent.
+
+A headless GL traversal over 900 updates (400 moving, then settling) reduced
+CPU-update p99 from 71.7 to 11.4 ms and maximum from 159.5 to 13.8 ms. Updates
+over 16.7 ms fell from 48 to zero; the median rose from 0.59 to 4.71 ms because
+streaming work is distributed rather than concentrated. Rendering was excluded
+from those timings. Settled chunk IDs and vertex-buffer hashes matched the
+previous implementation exactly; this does not guarantee desktop GPU frame times.
 
 ## Useful commands
 

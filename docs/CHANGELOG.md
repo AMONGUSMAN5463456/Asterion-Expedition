@@ -6,6 +6,10 @@
   interface, without changing fonts, wrapping, update frequency, or graphics quality.
 - Reduced procedural mesh-transform overhead during chunk streaming by hoisting
   scale calculations and reusing a normal vector, preserving generated geometry.
+- Spread terrain sampling, chunk decoration, and vertex-buffer construction
+  across frames instead of building an entire chunk in one update.
+- Kept the previous distant terrain visible while its replacement builds;
+  cancelled unfinished work on streaming unload and world changes.
 
 ## Graphics
 
