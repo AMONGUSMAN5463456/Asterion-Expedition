@@ -862,13 +862,40 @@ class ExpeditionApp(ShowBase):
             elif self._beam_child is not None:
                 self._beam_child.removeNode()
                 self._beam_child = None
+                if getattr(self, "_beam_halo", None) is not None:
+                    self._beam_halo.removeNode()
+                    self._beam_halo = None
+                if getattr(self, "_beam_flare", None) is not None:
+                    self._beam_flare.removeNode()
+                    self._beam_flare = None
+            halo = LineSegs("mining-beam-halo")
+            halo.setThickness(7)
+            halo.setColor(0.10, 0.55, 0.75, 0.35)
+            halo.moveTo(sx, sy, sz)
+            halo.drawTo(ex, ey, ez)
+            self._beam_halo = self.beam.attachNewNode(halo.create())
+            self._beam_halo.setTransparency(TransparencyAttrib.MAlpha)
+            self._beam_halo.setDepthWrite(False)
             line = LineSegs("mining-beam")
             line.setThickness(3)
-            line.setColor(.15, .95, 1, 1)
+            line.setColor(0.85, 1.0, 1.0, 1.0)
             line.moveTo(sx, sy, sz)
             line.drawTo(ex, ey, ez)
             self._beam_child = self.beam.attachNewNode(line.create())
+            flare_maker = CardMaker("mining-beam-flare")
+            flare_maker.setFrame(-0.5, 0.5, -0.5, 0.5)
+            self._beam_flare = self.beam.attachNewNode(flare_maker.generate())
+            self._beam_flare.setPos(ex, ey, ez)
+            self._beam_flare.setScale(0.9)
+            self._beam_flare.setBillboardPointEye()
+            self._beam_flare.setTransparency(TransparencyAttrib.MAlpha)
+            self._beam_flare.setDepthWrite(False)
+            self._beam_flare.setLightOff()
+            self._beam_flare.setFogOff()
+            self._beam_flare.setColor(0.7, 1.0, 1.0, 0.85)
             self._beam_endpoints = endpoints
+        if getattr(self, "_beam_flare", None) is not None:
+            self._beam_flare.setScale(0.8 + 0.25 * (0.5 + 0.5 * math.sin(self.mine_time * 18.0)))
         duration = max(.25, float(entity.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35))
         previous = self.mine_time
         self.mine_time += dt
@@ -898,6 +925,8 @@ class ExpeditionApp(ShowBase):
             self.beam = None
             self._beam_child = None
             self._beam_endpoints = None
+            self._beam_halo = None
+            self._beam_flare = None
 
     def _survival(self, dt):
         v = self.game.vitals

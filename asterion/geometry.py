@@ -282,7 +282,10 @@ class Mesh:
 def crystal_mesh(color=(.24,.82,.88), seed=0, size=1):
     rng = random.Random(seed)
     mesh = Mesh()
+    pale = mix(color, (1, 1, 1), .62)
     mesh.sphere((0,0,.17*size), (.95*size,.75*size,.3*size), shade(color,.32), 8,4, .25, seed)
+    # Flatter, darker contact shade grounds the cluster without widening it.
+    mesh.sphere((0,0,.06*size), (.9*size,.7*size,.12*size), shade(color,.22), 8,3, .12, seed+11)
     for i in range(5):
         angle = TAU*i/5 + rng.random()*.45
         radius = (.45 if i else 0)*size
@@ -293,18 +296,39 @@ def crystal_mesh(color=(.24,.82,.88), seed=0, size=1):
         mesh.tube((x,y,.14*size), mid, (.18+rng.random()*.18)*size,
                   shade(color,.7+rng.random()*.4), 5, end_radius=.22*size)
         mesh.tube(mid, tip, .22*size, shade(color,1.18), 5, end_radius=0)
+        # Pale tip facet: second tone toward the extremity.
+        mesh.tube(mid, tip, .1*size, shade(pale,.95), 4, end_radius=0)
+        if i == 0:
+            # Inner bright core nested well inside the main prism.
+            core_mid = (x*.5, y*.5, h*.5)
+            core_tip = (x*.55, y*.55, h*.86)
+            mesh.tube((x,y,.2*size), core_mid, .09*size, shade(pale,.9), 5, end_radius=.07*size)
+            mesh.tube(core_mid, core_tip, .07*size, pale, 5, end_radius=0)
     return mesh
 
 
 def rock_mesh(color=(.36,.4,.44), seed=0, size=1):
     mesh = Mesh()
+    rng = random.Random(seed+3)
     mesh.sphere((0,0,.58*size), (1.0*size,.8*size,.82*size), color, 8,5,.35,seed)
     mesh.sphere((.7*size,.1*size,.22*size), (.44*size,.5*size,.34*size), shade(color,.82), 7,4,.3,seed+7)
+    # Flatter shaded contact base; stays inside the enclosing sphere.
+    mesh.sphere((0,0,.08*size), (.92*size,.74*size,.14*size), shade(color,.55), 8,3, .12, seed+13)
     # Exposed mineral veins are embedded geometric facets.
     for i in range(3):
         x = (-.35+.32*i)*size
         mesh.tube((x,-.63*size,.3*size), (x+.17*size,-.55*size,.95*size),
                   .035*size, (1,.72,.32), 4)
+    # Moss/crystal flecks: tiny two-tone quads resting on the top faces.
+    moss = mix(color, (.32,.72,.35), .55)
+    fleck = mix(color, (1, 1, 1), .55)
+    for i in range(3):
+        cx = (rng.random()-.5)*1.1*size
+        cy = (rng.random()-.5)*.9*size
+        cz = (1.05+rng.random()*.25)*size
+        s = (.09+rng.random()*.07)*size
+        col = moss if i % 2 == 0 else fleck
+        mesh.quad((cx-s,cy,cz),(cx,cy+s,cz+s*.3),(cx+s,cy,cz),(cx,cy-s,cz+s*.3), col)
     return mesh
 
 
@@ -316,54 +340,83 @@ def flora_mesh(style, color, accent, seed=0, size=1):
     if style == "mushroom":
         for index, (x,y,height,rad) in enumerate(((0,0,4.3,2.8),(1.7,.4,2.3,1.4),(-1.1,.65,1.65,1.0))):
             h = height*(.85+rng.random()*.3)
+            droop = rng.uniform(-.18,.05)
             mesh.tube((x,y,0),(x+.13,y,h),.24 if not index else .14,stem,7,end_radius=.13)
-            rings = [(rad*.35,h+.65), (rad*.78,h+.42), (rad,h), (rad*.86,h-.22), (.22,h-.36)]
+            rings = [(rad*.35,h+.65), (rad*.78,h+.42), (rad,h), (rad*.86,h-.22+droop), (.22,h-.36+droop)]
             for j in range(len(rings)-1):
                 r1,z1 = rings[j]
                 r2,z2 = rings[j+1]
                 for k in range(12):
                     a,b = TAU*k/12, TAU*(k+1)/12
+                    # Second tone strengthens toward the rim extremities.
                     cc = mix(color,accent,.2 + (.7 if j>1 else 0))
+                    if j >= 2:
+                        cc = mix(cc, accent, .35)
                     mesh.quad((x+r1*math.cos(a),y+r1*math.sin(a),z1),
                               (x+r2*math.cos(a),y+r2*math.sin(a),z2),
                               (x+r2*math.cos(b),y+r2*math.sin(b),z2),
                               (x+r1*math.cos(b),y+r1*math.sin(b),z1), shade(cc,.85+.15*(k%3)/2))
             mesh.tube((x,y,h+.65),(x,y,h+.76),rad*.35,shade(color,1.12),12,end_radius=0)
+            mesh.sphere((x,y,h+.78),(.12,.12,.07),mix(color,accent,.75),6,3)
             for k in range(6):
-                a = TAU*k/6
-                mesh.sphere((x+rad*.6*math.cos(a),y+rad*.6*math.sin(a),h+.48),
+                a = TAU*k/6 + rng.random()*.2
+                mesh.sphere((x+rad*.6*math.cos(a),y+rad*.6*math.sin(a),h+.48+droop*.5),
                             (.15,.15,.06),accent,6,3)
+                # Drooping rim fleck curled under the cap edge.
+                mesh.tri((x+rad*.82*math.cos(a),y+rad*.82*math.sin(a),h+.1+droop),
+                         (x+rad*.82*math.cos(a+.3),y+rad*.82*math.sin(a+.3),h+.1+droop),
+                         (x+rad*.7*math.cos(a+.15),y+rad*.7*math.sin(a+.15),h-.12+droop),
+                         mix(accent,color,.3))
+        if seed % 3 == 0:
+            # Small glowing seed-pod/bloom quad cluster above the main cap.
+            bx, by, bz = (0, 0, 4.3*.85+.95)
+            s = .16
+            mesh.quad((bx-s,by,bz),(bx,by+s,bz+s*.4),(bx+s,by,bz),(bx,by-s,bz+s*.4), mix(accent,(1,1,1),.35))
+            mesh.quad((bx,by,bz-s),(bx+s*.4,by,bz),(bx,by,bz+s),(bx-s*.4,by,bz), mix(accent,(1,1,1),.35))
     elif style == "coral":
         for i in range(6):
-            angle = i*TAU/6
+            angle = i*TAU/6 + rng.random()*.18
             x,y = math.cos(angle),math.sin(angle)
             h = 2.4+rng.random()*2.3
+            pitch = rng.uniform(-.25,.3)
             mid = (x*.7,y*.7,h*.6)
-            tip = (x*1.1,y*1.1,h)
+            tip = (x*1.1+pitch*.5,y*1.1,h+pitch*.4)
             mesh.tube((0,0,0),mid,.38,color,6,end_radius=.22)
             mesh.tube(mid,tip,.22,shade(color,1.12),6,end_radius=.04)
+            # Pale second-tone sleeve just below each tip.
+            mesh.tube((mid[0]*.6+tip[0]*.4,mid[1]*.6+tip[1]*.4,mid[2]*.6+tip[2]*.4),
+                      tip,.13,mix(color,accent,.65),5,end_radius=.05)
             for side in (-1,1):
-                mesh.tube(mid,(x*1.7+side*.3,y*1.5,h*.9),.14,accent,5,end_radius=.035)
+                droop_end = (x*1.7+side*.3,y*1.5,h*.9-rng.random()*.35)
+                mesh.tube(mid,droop_end,.14,accent,5,end_radius=.035)
+                mesh.sphere(droop_end,(.09,.09,.11),mix(accent,(1,1,1),.4),6,3)
             mesh.sphere(tip,(.25,.25,.32),accent,7,4)
+            mesh.sphere(tip,(.12,.12,.16),mix(accent,(1,1,1),.45),6,3)
+        if seed % 3 == 1:
+            s = .2
+            mesh.quad((-s,0,4.6),(0,s,4.75),(s,0,4.6),(0,-s,4.75), mix(accent,(1,1,1),.4))
     elif style == "fan":
         mesh.tube((0,0,0),(.18,0,4.2),.24,stem,7,end_radius=.08)
         for i in range(9):
-            angle = i*TAU/9
+            angle = i*TAU/9 + rng.random()*.08
             cos,sin = math.cos(angle),math.sin(angle)
             root = (.12,0,2.9+(i%3)*.42)
-            tip = (cos*3.0,sin*3.0,3.8+(i%2)*.7)
+            # Varied pitch per frond: some arc high, some droop low.
+            lift = (i%2)*.7 + rng.uniform(-.55,.35)
+            tip = (cos*3.0,sin*3.0,3.8+lift)
             cross_sections=[]
             for j in range(7):
                 t=j/6
                 width=math.sin(math.pi*t)**.8*.58
+                curl = math.sin(math.pi*t)*(.64+rng.uniform(-.05,.05)) - t*t*rng.uniform(0,.5)
                 center=(root[0]*(1-t)+tip[0]*t,root[1]*(1-t)+tip[1]*t,
-                        root[2]*(1-t)+tip[2]*t+math.sin(math.pi*t)*.64)
+                        root[2]*(1-t)+tip[2]*t+curl)
                 left=(center[0]-sin*width,center[1]+cos*width,center[2]-.17*math.sin(math.pi*t))
                 right=(center[0]+sin*width,center[1]-cos*width,center[2]-.17*math.sin(math.pi*t))
                 cross_sections.append((left,center,right))
             for j in range(6):
                 a,b=cross_sections[j],cross_sections[j+1]
-                leaf_color=mix(color,accent,max(0,(j/6-.55))*.55)
+                leaf_color=mix(color,accent,max(0,(j/6-.55))*.55 + (0.3 if j>=4 else 0))
                 mesh.quad(a[0],a[1],b[1],b[0],shade(leaf_color,.94))
                 mesh.quad(a[1],a[2],b[2],b[1],shade(leaf_color,1.1))
                 sx,sy=-sin*.022,cos*.022
@@ -376,22 +429,36 @@ def flora_mesh(style, color, accent, seed=0, size=1):
                         mesh.tri((a[1][0]-sx,a[1][1]-sy,a[1][2]+.012),
                                  (a[1][0]+sx,a[1][1]+sy,a[1][2]+.012),
                                  (point[0],point[1],point[2]+.012),shade(accent,.8))
+            # Accent tip cap on each frond extremity.
+            tend = cross_sections[-1][1]
+            mesh.tri((tend[0]-sin*.12,tend[1]+cos*.12,tend[2]),
+                     (tend[0]+sin*.12,tend[1]-cos*.12,tend[2]),
+                     (tend[0]+cos*.2,tend[1]+sin*.2,tend[2]+.1), mix(accent,(1,1,1),.3))
         mesh.sphere((.12,0,4.4),(.38,.38,.6),accent,8,5)
+        if seed % 3 == 2:
+            s = .18
+            mesh.quad((.12-s,0,5.15),(.12, -s+0,5.3),(.12+s,0,5.15),(.12,s,5.3), mix(accent,(1,1,1),.4))
     else:  # ribbed, branched succulent
         mesh.tube((0,0,0),(0,0,3.1),.56,color,9,end_radius=.36)
         mesh.sphere((0,0,3.1),(.37,.37,.38),color,9,5)
         for i in range(3):
-            angle = i*TAU/3+.3
+            angle = i*TAU/3+.3+rng.random()*.15
             x,y = math.cos(angle),math.sin(angle)
             mid = (x*1.15,y*1.15,1.55+i*.35)
+            lean = rng.uniform(-.2,.2)
             mesh.tube((0,0,1+i*.25),mid,.27,shade(color,.85),7,end_radius=.22)
-            mesh.tube(mid,(mid[0],mid[1],mid[2]+1),.22,color,7,end_radius=.17)
-            mesh.sphere((mid[0],mid[1],mid[2]+1.06),(.3,.3,.22),accent,7,4)
+            mesh.tube(mid,(mid[0]+lean,mid[1],mid[2]+1),.22,mix(color,accent,.25),7,end_radius=.17)
+            mesh.sphere((mid[0]+lean,mid[1],mid[2]+1.06),(.3,.3,.22),accent,7,4)
+            mesh.sphere((mid[0]+lean,mid[1],mid[2]+1.12),(.14,.14,.12),mix(accent,(1,1,1),.45),6,3)
         for i in range(7):
             a = i*TAU/7
             mesh.tube((.52*math.cos(a),.52*math.sin(a),.2),
                       (.36*math.cos(a),.36*math.sin(a),2.95),.02,shade(color,1.5),3)
         mesh.sphere((0,0,3.5),(.45,.45,.23),accent,8,4)
+        mesh.sphere((0,0,3.62),(.2,.2,.1),mix(accent,(1,1,1),.4),7,3)
+        if seed % 3 == 0:
+            s = .17
+            mesh.quad((-s,0,3.95),(0,s,4.08),(s,0,3.95),(0,-s,4.08), mix(accent,(1,1,1),.4))
     if size != 1:
         result = Mesh()
         result.add(mesh,scale=size)
@@ -402,13 +469,16 @@ def flora_mesh(style, color, accent, seed=0, size=1):
 def grass_mesh(color, accent, seed=0):
     rng = random.Random(seed)
     mesh = Mesh()
-    for i in range(7):
+    for i in range(9):
         a = rng.random()*TAU
-        x,y = rng.uniform(-.7,.7),rng.uniform(-.7,.7)
+        x,y = rng.uniform(-.9,.9),rng.uniform(-.9,.9)
         h = rng.uniform(.3,1.1)
         w = rng.uniform(.06,.18)
-        mesh.tri((x-w,y,0),(x+w,y,0),(x+math.cos(a)*.4,y+math.sin(a)*.4,h),
-                 mix(color,accent,rng.random()*.4))
+        lean = rng.uniform(.3,.65)
+        base = mix(color,accent,rng.random()*.35)
+        tip = mix(color,accent,.65+rng.random()*.35)
+        mesh.tri((x-w,y,0),(x+w,y,0),(x+math.cos(a)*lean,y+math.sin(a)*lean,h),
+                 color, colors=(rgba(base),rgba(base),rgba(tip)))
     return mesh
 
 
@@ -420,6 +490,7 @@ def fauna_mesh(color, accent, seed=0):
         # A long-tailed hovering filter feeder with layered manta-like fins.
         mesh.sphere((0,0,1.2),(.5,1.15,.43),color,12,7)
         mesh.sphere((0,.98,1.32),(.36,.44,.34),mix(color,accent,.2),10,6)
+        glow_eye = mix(accent,(1,1,1),.35)
         for side in (-1,1):
             for i in range(4):
                 y=.8-i*.45
@@ -430,8 +501,15 @@ def fauna_mesh(color, accent, seed=0):
                          (side*.26,y-.5,1.12),shade(color,.75))
                 mesh.tube((side*.25,y,1.35),(side*width,y-.35,1.5),.028,accent,4,end_radius=.008)
             mesh.sphere((side*.3,1.14,1.43),(.06,.1,.09),(.1,.19,.24),8,5)
+            # Glowing eye dots: tiny accent quads on the head flanks.
+            ex = side*.3
+            mesh.quad((ex-.05,1.2,1.5),(ex+.05,1.2,1.5),(ex+.05,1.28,1.56),(ex-.05,1.28,1.56), glow_eye)
             mesh.tube((side*.18,1.3,1.35),(side*.55,1.82,1.5),.033,accent,5,end_radius=.01)
+            mesh.sphere((side*.55,1.82,1.5),(.05,.05,.06),glow_eye,6,4)
+            # Layered fin ridge: one extra thin box along the wing root.
+            mesh.box((side*.6,.35,1.42),(.5,.9,.06),mix(color,accent,.5))
         mesh.tube((0,-.9,1.25),(0,-2.7,1.45),.13,color,6,end_radius=.025)
+        mesh.box((0,-1.7,1.5),(.08,.9,.05),mix(color,accent,.45))
         mesh.sphere((0,-2.7,1.45),(.15,.31,.11),accent,8,5)
         return mesh
     if seed%3 == 2:
@@ -441,6 +519,9 @@ def fauna_mesh(color, accent, seed=0):
             y=-.9+i*.43
             width=1-math.fabs(i-2)*.11
             mesh.sphere((0,y,1.05),(width,.42,.55),mix(color,accent,.12+(i%2)*.23),9,5)
+        # Layered shell ridges: two extra thin boxes along the spine.
+        mesh.box((0,-.2,1.5),(.12,1.6,.08),mix(color,accent,.55))
+        mesh.box((0,.5,1.42),(.1,.9,.06),shade(accent,.8))
         for side in (-1,1):
             for i in range(3):
                 y=-.72+i*.7
@@ -450,6 +531,10 @@ def fauna_mesh(color, accent, seed=0):
             mesh.tube((side*.3,1.1,.88),(side*.48,1.67,1.25),.11,dark,6,end_radius=.075)
             mesh.sphere((side*.48,1.67,1.25),(.13,.17,.15),accent,9,5)
             mesh.sphere((side*.48,1.8,1.26),(.075,.06,.07),(.04,.1,.16),8,5)
+            # Glowing eye/antenna dots: paired accent quads above the snout.
+            ex = side*.48
+            mesh.quad((ex-.04,1.72,1.42),(ex+.04,1.72,1.42),(ex+.04,1.78,1.48),(ex-.04,1.78,1.48),
+                      mix(accent,(1,1,1),.35))
         return mesh
     mesh.sphere((0,0,1.25),(.72,1.35,.72),color,12,7)
     mesh.sphere((0,.95,1.85),(.53,.65,.55),mix(color,accent,.27),10,7)
@@ -465,6 +550,9 @@ def fauna_mesh(color, accent, seed=0):
         mesh.sphere((side*.49,1.24,2.01),(.04,.06,.07),(.57,1,.95),7,4)
         mesh.tube((side*.25,.9,2.25),(side*.47,.75,2.88),.045,dark,5,end_radius=.025)
         mesh.sphere((side*.47,.75,2.88),(.12,.12,.16),accent,8,5)
+        mesh.sphere((side*.47,.75,2.98),(.05,.05,.06),mix(accent,(1,1,1),.4),6,4)
+        # Layered shell/fin ridge along the flank.
+        mesh.box((side*.78,-.1,1.35),(.08,1.5,.07),mix(color,accent,.5))
     for i in range(5):
         x = (i-2)*.27
         mesh.tri((0,-.85,1.45),(x-.16,-2.05,1.85),(x+.16,-2.05,1.85),
@@ -537,6 +625,14 @@ def make_ship(parent):
     hull.box((0,-2.42,2.16),(.73,.58,.1),navy)
     for i in range(5):
         hull.box((-.29+i*.145,-2.43,2.23),(.055,.42,.045),metal)
+    # Warm cabin window strip along each fuselage flank.
+    for side in (-1,1):
+        for i in range(4):
+            glow.box((side*.95,-1.5+i*.75,1.85),(.03,.4,.22),(.95,.66,.25))
+        # Wingtip navigation beacon quad (saturated red; caller pulses it).
+        glow.quad((side*3.5,-3.05,1.42),(side*3.15,-1.1,1.42),(side*3.15,-1.1,1.56),(side*3.5,-3.05,1.56),(1,.12,.1))
+    # Tail beacon quad, clear of the hull silhouette.
+    glow.quad((-.12,-3.32,1.6),(.12,-3.32,1.6),(.12,-3.32,1.78),(-.12,-3.32,1.78),(1,.12,.1))
     hull.tube((.63,-1.86,2.12),(.76,-1.92,2.9),.025,metal,5)
     glow.sphere((.76,-1.92,2.9),(.05,.05,.05),cyan,6,4)
     hull.node("wayfarer-hull",root,two_sided=True)
@@ -570,6 +666,23 @@ def outpost_mesh(accent=(.15,.78,.85)):
         mesh.box((side*3.0,.5,1.3),(.72,3.08,.12),pale)
         for j in range(4):
             glow.box((side*3.01,-.4+j*.58,1.37),(.4,.26,.025),accent)
+        # Deck-edge greebles: low crates flush against the bench ends.
+        mesh.box((side*3.0,2.35,.75),(.5,.5,.5),steel)
+        mesh.box((side*3.0,-1.35,.72),(.44,.44,.44),dark)
+    # Deck-edge railing: short posts plus a top rail ring at the rim.
+    for i in range(12):
+        a = TAU*i/12
+        x, y = 6.9*math.cos(a), 6.9*math.sin(a)
+        mesh.tube((x,y,.54),(x,y,1.5),.05,steel,5)
+    for i in range(12):
+        a, b = TAU*i/12, TAU*(i+1)/12
+        mesh.tube((6.9*math.cos(a),6.9*math.sin(a),1.5),(6.9*math.cos(b),6.9*math.sin(b),1.5),.035,pale,5)
+    # Warm kiosk window strip facing the deck.
+    for i in range(6):
+        a = TAU*i/6
+        glow.box((1.05*math.cos(a),1.05*math.sin(a),1.35),(.3,.08,.3),(.95,.66,.25))
+    # Blinking-beacon quad: saturated red plate atop the antenna mast.
+    glow.quad((5.85,1.85,9.25),(6.15,1.85,9.25),(6.15,2.15,9.25),(5.85,2.15,9.25),(1,.12,.1))
     # Offset antenna and a concave segmented survey dish.
     mesh.tube((6,2,0),(6,2,7.8),.17,steel,8,end_radius=.1)
     for i in range(12):
@@ -621,8 +734,17 @@ def ruin_mesh(accent=(.22,.95,.88)):
         mesh.tube((side*8,1,-.6),(side*8,1,h),1.0,stone,5,end_radius=.6)
         for j in range(6):
             glow.box((side*8,.04,1.4+j*.69),(.11+.1*(j%2),.06,.34),accent)
-    mesh.tube((0,-3,.55),(0,-3,1.4),1.1,stone,6,end_radius=.72)
-    glow.sphere((0,-3,2.35),(.65,.65,.85),accent,8,5)
+        # Warm window slit near the pylon crown.
+        glow.box((side*8,.28,h-.6),(.5,.06,.3),(.95,.66,.25))
+    # Hanging moss/cables: thin tubes draped from the halo rim and pylons.
+    for k in range(6):
+        a = -math.pi*.16 + k*TAU/22 + .05
+        hx, hz = 6.0*math.cos(a), 6.4+6.0*math.sin(a)
+        mesh.tube((hx,-.55,hz),(hx+.15,-.5,hz-1.1-k*.12),.035,shade(stone,.6),4,end_radius=.015)
+    mesh.tube((-8,1,7.6),(-7.7,1.2,5.9),.03,shade(stone,.55),4,end_radius=.015)
+    mesh.tube((8,1,6.1),(7.8,1.2,4.7),.03,shade(stone,.55),4,end_radius=.015)
+    # Beacon quad: saturated red plate above the reliquary (caller pulses it).
+    glow.quad((-.3,-3.62,3.1),(.3,-3.62,3.1),(.3,-3.62,3.4),(-.3,-3.62,3.4),(1,.12,.1))
     return mesh,glow
 
 
@@ -653,6 +775,9 @@ def building_mesh(kind, accent=(.21,.9,.9)):
         glow.box((0,-3.027,2.63),(2.17,.012,.075),accent)
         glow.box((0,-2.9,.207),(1.8,.25,.014),shade(accent,.7))
         glow.box((0,2.775,2.55),(3.5,.012,.085),shade(accent,.65))
+        # Roof-edge beacon quad (saturated red; caller pulses it) and eave strip.
+        glow.quad((-3.0,3.03,3.35),(-2.6,3.03,3.35),(-2.6,3.03,3.55),(-3.0,3.03,3.55),(1,.12,.1))
+        glow.box((2.0,3.026,2.0),(2.4,.012,.3),(.95,.66,.25))
     elif kind == "solar":
         mesh.tube((0,0,-.2),(0,0,2.3),.2,pale,8)
         mesh.box((0,0,2.3),(6,3.8,.18),dark)
@@ -660,6 +785,9 @@ def building_mesh(kind, accent=(.21,.9,.9)):
             for iy in range(4):
                 glow.box((-2.5+ix*.83,-1.4+iy*.9,2.4),(.74,.79,.02),(.1,.35,.52))
         mesh.box((0,0,.35),(1.2,1.1,.7),pale)
+        # Warm service window strip on the inverter housing; beacon on the rim.
+        glow.box((0,-.16,.55),(.9,.02,.25),(.95,.66,.25))
+        glow.quad((-2.9,1.9,2.45),(-2.6,1.9,2.45),(-2.6,1.9,2.65),(-2.9,1.9,2.65),(1,.12,.1))
     elif kind == "extractor":
         mesh.tube((0,0,-.1),(0,0,.4),2,dark,8,end_radius=1.7)
         mesh.tube((0,0,.4),(0,0,2.7),1.1,pale,8,end_radius=.8)
@@ -669,6 +797,9 @@ def building_mesh(kind, accent=(.21,.9,.9)):
             mesh.tube((math.cos(a),math.sin(a),2),
                       (2.3*math.cos(a),2.3*math.sin(a),.2),.12,pale,6)
         glow.tube((0,0,1.4),(0,0,1.7),1.1,accent,8)
+        # Cool window band around the drum plus a red beacon plate on top.
+        glow.tube((0,0,2.15),(0,0,2.4),1.02,shade(accent,.55),8)
+        glow.quad((-.2,-1.32,3.3),(.2,-1.32,3.3),(.2,-1.32,3.55),(-.2,-1.32,3.55),(1,.12,.1))
     else:
         mesh.tube((0,0,-.15),(0,0,.2),1.4,dark,6,end_radius=1.2)
         mesh.tube((0,0,.2),(0,0,4.8),.17,pale,6,end_radius=.07)
@@ -678,6 +809,9 @@ def building_mesh(kind, accent=(.21,.9,.9)):
         glow.ring((0,0,4.55),.55,.66,accent,24)
         mesh.box((0,-.18,1.4),(.55,.3,.55),dark)
         glow.box((0,-.34,1.4),(.4,.025,.35),accent)
+        # Warm slit windows on the hut face; red beacon quad above the mast.
+        glow.box((0,-.345,1.62),(.34,.012,.12),(.95,.66,.25))
+        glow.quad((-.15,-.1,5.15),(.15,-.1,5.15),(.15,-.1,5.35),(-.15,-.1,5.35),(1,.12,.1))
     return mesh,glow
 
 
@@ -723,4 +857,7 @@ def station_mesh():
             for iy in range(3):
                 glow.box((side*45-17+ix*8.5,16+iy*9,25.5),(7.5,7.8,.1),(.065,.26,.4))
         mesh.tube((side*13,12,10),(side*45,25,25),1.5,metal,6)
+    # Harbour beacon quads: saturated red plates at the spine tips.
+    glow.quad((-2,-131.2,-5.6),(2,-131.2,-5.6),(2,-131.2,-4.6),(-2,-131.2,-4.6),(1,.12,.1))
+    glow.quad((-1,50.2,7.2),(1,50.2,7.2),(1,50.2,8.4),(-1,50.2,8.4),(1,.12,.1))
     return mesh,glow

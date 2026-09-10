@@ -48,9 +48,9 @@ class PlanetPaint:
         self.flora=tuple(planet.get("flora",self.ground)[:3])
         self.accent=tuple(planet["accent"][:3])
         self.clouds=clouds
-        self.threshold={"oceanic":.16,"verdant":-.025,"fungal":-.10,
-            "crystalline":-.17,"frozen":-.14,"toxic":-.13,
-            "desert":-.55,"volcanic":-.60}.get(self.biome,-.02)
+        self.threshold={"oceanic":.15,"verdant":-.02,"fungal":-.09,
+            "crystalline":-.16,"frozen":-.13,"toxic":-.12,
+            "desert":-.53,"volcanic":-.58}.get(self.biome,-.02)
         self.cloud_density={"desert":.25,"volcanic":.17,"toxic":.55,
             "frozen":.60}.get(self.biome,.43)
         self.deep_water=_shade(self.water,.39)
@@ -83,6 +83,8 @@ class PlanetPaint:
         c=table[x0+y0+z1]*(1-fx)+table[x1+y0+z1]*fx
         d=table[x0+y1+z1]*(1-fx)+table[x1+y1+z1]*fx
         return (a*(1-fy)+b*fy)*(1-fz)+(c*(1-fy)+d*fy)*fz
+    # Fixed storm eyes live inline in color() as 3D unit vectors, so swirl
+    # offsets use only 3D dot/cross products and never show a seam.
     def color(self,normal):
         x,y,z=normal
         p,q,r,s,t,u=self.phase
@@ -91,26 +93,46 @@ class PlanetPaint:
         mix=_mix
         shade=_shade
         sin=math.sin
+        cos=math.cos
+        exp=math.exp
+        sqrt=math.sqrt
         # Rotated domain warping produces irregular connected continental
         # shelves, island arcs and eroded highlands instead of latitude bands.
         warp=noise(x*2+p,y*2+q,z*2+r)
         a,b,c=x*3.2+p+warp*.9,y*3.2+q+warp*.7,z*3.2+r
         low=noise(a,b,c)
+        # Sharpened large-scale contrast: an S-curve around zero steepens
+        # continental shelves while keeping the noise range and threshold.
+        low_s=(smooth(-.6,.6,low)*2-1)*.6
         medium=noise(a*2.13+s,b*2.13+t,c*2.13+u)
         fine=noise(a*5.7+t,b*5.7+u,c*5.7+s)
-        elevation=low+.28*medium+.095*fine
+        # Second archipelago octave: small amplitude flips only coastlines,
+        # scattering island chains through the oceans.
+        arch=noise(a*4.3+u,b*4.3+s,c*4.3+t)
+        elevation=low_s+.28*medium+.095*fine+.06*arch
         biome=self.biome
         height=elevation-self.threshold
         sea=mix(self.deep_water,self.shallow_water,smooth(-.47,-.045,height))
+        # Darker trenches in deep water; sun-glint sparkle in the shallows.
+        deep_w=1-smooth(-.50,-.18,height)
+        trench=smooth(.15,.75,fine*.5+medium*.5)*deep_w
+        sea=shade(sea,1-.22*trench)
+        shallow_w=smooth(-.14,-.02,height)*(1-smooth(.0,.06,height))
+        sparkle=smooth(.55,.92,medium*.6+fine*.4)*shallow_w
+        sea=mix(sea,(.96,.98,1.0),sparkle*.30)
         sea=mix(sea,self.coast,smooth(-.10,.01,height)*.70)
         land=mix(self.vegetation,self.highland,smooth(.025,.46,height))
         if biome=="desert":
             dunes=.5+.5*sin((x+y*.45)*53+z*22+medium*6)
             land=mix(self.dune_shadow,self.dune_light,.25+.65*dunes)
+            band=.5+.5*sin(z*47+medium*7+x*4)
+            land=shade(land,.96+.08*band)
         elif biome=="volcanic":
             land=mix((.055,.042,.065),self.basalt,.4+.4*medium)
             fissure=(1-smooth(.012,.075,abs(medium+.23*fine)))*smooth(-.1,.22,low)
             land=mix(land,(1,.22,.025),fissure*.92)
+            ember=(1-smooth(.004,.035,abs(fine-.13)))*(1-smooth(.20,.55,abs(z)))
+            land=mix(land,(1.0,.32,.06),ember*.75)
         elif biome=="frozen":
             land=mix((.22,.48,.66),(.78,.89,.93),smooth(-.12,.37,elevation))
             land=mix(land,(.10,.31,.47),(1-smooth(.008,.045,abs(fine)))*.25)
@@ -118,24 +140,55 @@ class PlanetPaint:
             land=mix(self.crystalline_shadow,self.accent,smooth(.10,.62,elevation)*.62)
         elif biome=="fungal":
             land=mix(self.fungal_shadow,self.ground,smooth(-.1,.45,medium))
+            blotch=noise(x*9+u+medium*2,y*9+s,z*9+t)
+            land=mix(land,self.accent,smooth(.25,.70,blotch)*.35)
+        elif biome=="toxic":
+            blotch=noise(x*9+u+medium*2,y*9+s,z*9+t)
+            land=mix(land,self.flora,smooth(.20,.65,blotch)*.30)
+            land=mix(land,self.accent,smooth(.45,.80,fine)*.25)
         # Narrow beaches and ridges read clearly at normal orbit distances.
         land=mix(self.beach,land,smooth(.008,.062,height))
         base=mix(sea,land,smooth(-.012,.014,height))
         relief=.88+.12*smooth(-.2,.4,fine)+.10*medium
         base=shade(base,relief)
+        az=z if z>=0 else -z
+        if biome in ("frozen","crystalline","oceanic"):
+            # Noisy latitude ice cap reaching over sea and land alike.
+            cap=smooth(.68,.76,az+.05*fine)
+            base=mix(base,(.87,.93,.96),cap)
         if biome not in ("desert","volcanic","toxic"):
-            ice=smooth(.79,.93,abs(z)+.04*medium)
+            ice=smooth(.79,.93,az+.04*medium)
             base=mix(base,(.80,.91,.94),ice*.96)
         if self.clouds:
             # Twisted weather fronts and small puffs are baked into the same
             # opaque surface: no near-coincident transparent cloud sphere.
-            curl=.45*sin(z*8+s)+.26*sin(y*5+t)
-            front=noise(x*6.2+p+curl,y*6.2+q-curl,z*6.2+r)
-            small=noise(x*17+s,y*17+t,z*17+u)
+            # Two large spiral storms swirl the sample point around fixed 3D
+            # eyes (Rodrigues rotation, angle ~ 1/radius with gaussian
+            # falloff), so fronts wind into spirals near the eyes only.
+            qx,qy,qz=x,y,z
+            for sx,sy,sz,twist,rad in ((.348,.795,.497,2.6,.55),
+                                       (-.781,-.279,-.558,-2.2,.62)):
+                d=qx*sx+qy*sy+qz*sz
+                d=1.0 if d>1 else -1.0 if d<-1 else d
+                ch=sqrt(2-2*d) if d<1 else 0.0
+                g=ch/rad
+                w=exp(-g*g)
+                ang=twist*w/(ch+.25)
+                co,si=cos(ang),sin(ang)
+                cx=sy*qz-sz*qy
+                cy=sz*qx-sx*qz
+                cz=sx*qy-sy*qx
+                ic=1-co
+                qx,qy,qz=(qx*co+cx*si+sx*d*ic,
+                          qy*co+cy*si+sy*d*ic,
+                          qz*co+cz*si+sz*d*ic)
+            curl=.45*sin(qz*8+s)+.26*sin(qy*5+t)
+            front=noise(qx*6.2+p+curl,qy*6.2+q-curl,qz*6.2+r)
+            small=noise(qx*17+s,qy*17+t,qz*17+u)
             density=self.cloud_density
             cover=smooth(.24,.67,front+small*.26)*density
             wisps=(1-smooth(.015,.10,abs(front-.11)))*smooth(.04,.45,small)*density*.42
-            cover=min(.80,cover+wisps)
+            cover=min(.85,cover+wisps)
             shadow=smooth(.18,.5,front)*.10*(1-cover)
             base=shade(base,1-shadow)
             cloud=(.80,.87,.92) if biome!="toxic" else (.71,.77,.38)
@@ -214,15 +267,22 @@ def terrain_detail_texture(seed):
         row=y*width*3
         for x in range(width):
             grain=rand()
+            tint=rand()
             vein=sin((x*3+y*2)*step3+wave)
-            value=.76+.17*grain+.065*vein
-            if grain>.974:
-                value=.98
-            v=int(value*255)
+            faint=sin((x*2-y*3)*step3-wave*.5)
+            # Mean ~0.78 keeps terrain brightness; warm/cool variance tints
+            # channels without shifting the average.
+            value=.70+.16*grain+.03*vein+.02*faint
+            if grain>.976:
+                value*=.45
+            warm=tint-.5
+            r=value*(1+.06*warm)
+            g=value*(1+.015*warm)
+            b=value*(1-.06*warm)
             i=row+x*3
-            pixels[i]=v
-            pixels[i+1]=v
-            pixels[i+2]=v
+            pixels[i]=int(max(0.0,min(1.0,r))*255)
+            pixels[i+1]=int(max(0.0,min(1.0,g))*255)
+            pixels[i+2]=int(max(0.0,min(1.0,b))*255)
     texture=Texture(f"soil-grain-{seed}")
     texture.setup2dTexture(width,width,Texture.TUnsignedByte,Texture.FRgb8)
     texture.setRamImageAs(bytes(pixels),"RGB")
@@ -242,8 +302,10 @@ def planet_mesh(radius,segments=96,rings=48):
         incidence=n[0]*-.68+n[1]*-.62+n[2]*.39
         daylight=max(0,incidence)**.66
         edge=_smooth(-.15,.18,incidence)
-        return (.07+.85*daylight+.055*edge,
-                .095+.82*daylight+.045*edge,
+        # Warm tint hugs the terminator where incidence crosses zero.
+        term=1-_smooth(0.0,.28,abs(incidence))
+        return (.07+.85*daylight+.055*edge+.06*term,
+                .095+.82*daylight+.045*edge+.025*term,
                 .15+.76*daylight+.025*edge,1)
     mesh.sphere((0,0,0),(radius,)*3,(1,1,1),segments,rings,
                 color_fn=illumination,smooth=True,textured=True)
@@ -259,7 +321,7 @@ def atmosphere_mesh(radius,color):
     step=tau/96
     angles=tuple(i*step for i in range(97))
     r3=color[0],color[1],color[2]
-    for inner,outer,a,b in ((.998,1.012,.13,.26),(1.012,1.035,.26,.09),(1.035,1.085,.09,0)):
+    for inner,outer,a,b in ((.998,1.010,.30,.18),(1.010,1.028,.18,.08),(1.028,1.055,.08,.02),(1.055,1.090,.02,0)):
         ir,orr=radius*inner,radius*outer
         c0=(*r3,a)
         c1=(*r3,b)

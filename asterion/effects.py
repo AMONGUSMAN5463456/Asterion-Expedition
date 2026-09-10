@@ -123,6 +123,30 @@ class PlayerEffects:
             x, z = math.cos(angle) * 0.094, math.sin(angle) * 0.094
             crown.box((x, 0, z), (0.016, 0.014, 0.016), _AMBER)
         crown.node("survey-crown-ring", self.crown, two_sided=True, unlit=True)
+        self.scan_ring = self.tool.attachNewNode("survey-scan-ring")
+        self.scan_ring.setPos(0, 0.475, 0.022)
+        scan = Mesh()
+        scan.ring((0, 0, 0), 0.112, 0.120, _CYAN, 32, tilt=90)
+        for i in range(2):
+            angle = i * math.pi + math.pi / 4
+            x, z = math.cos(angle) * 0.116, math.sin(angle) * 0.116
+            scan.box((x, 0, z), (0.018, 0.012, 0.018), _AMBER)
+        scan.node("survey-scan-holo", self.scan_ring, two_sided=True, unlit=True)
+        # Floating sight reticle hovering just past the emitter tip.
+        sight = Mesh()
+        half, w, y = 0.030, 0.007, 0.62
+        sight.box((0, y, -half), (half * 2 + w, 0.004, w), _CYAN)
+        sight.box((0, y, half), (half * 2 + w, 0.004, w), _CYAN)
+        sight.box((-half, y, 0), (w, 0.004, half * 2 + w), _CYAN)
+        sight.box((half, y, 0), (w, 0.004, half * 2 + w), _CYAN)
+        sight.box((0, y, 0), (0.010, 0.004, 0.010), _AMBER)
+        self._sight = sight.node("survey-sight-reticle", self.tool, two_sided=True, unlit=True)
+        # Charge-status light strip on the camera-facing rear face.
+        strip = Mesh()
+        strip.box((0.10, -0.201, -0.045), (0.028, 0.008, 0.024), (0.25, 1.0, 0.45))
+        strip.box((0.10, -0.201, 0.0), (0.028, 0.008, 0.024), _AMBER)
+        strip.box((0.10, -0.201, 0.045), (0.028, 0.008, 0.024), (1.0, 0.30, 0.22))
+        self._charge_strip = strip.node("survey-charge-strip", self.tool, unlit=True)
 
         glow = Mesh()
         glow.sphere((0, 0, 0), (0.065, 0.025, 0.065), (0.53, 1.0, 1.0, 0.35),
@@ -189,6 +213,16 @@ class PlayerEffects:
                             (side * 1.067, 1.495, -0.33), 0.004, _SIGNAL, 4)
         shell.tube((-0.80, 2.30, 0.99), (0.80, 2.30, 0.99), 0.022, _FRAME, 6)
         shell.tube((-0.35, 1.52, -0.70), (0.35, 1.52, -0.70), 0.025, _FRAME, 6)
+        for side in (-1, 1):
+            shell.box((side * 0.62, 2.02, 0.80), (0.035, 0.44, 0.035), _GRAPHITE)
+        # Faint holographic HUD ladder floating in the console gap.
+        for sx in (-0.09, 0.09):
+            instruments.box((sx, 1.70, -0.50), (0.008, 0.005, 0.17), _CYAN)
+        for rz in (-0.555, -0.50, -0.445):
+            instruments.box((0, 1.70, rz), (0.17, 0.005, 0.008), _CYAN)
+        # Warning-light dots share the indicators node update() already drives.
+        indicators.box((-0.06, 1.52, -0.66), (0.030, 0.008, 0.016), _AMBER)
+        indicators.box((0.06, 1.52, -0.66), (0.030, 0.008, 0.016), (1.0, 0.30, 0.22))
         shell.node("cockpit-shell", self.cockpit)
         self.instruments = instruments.node("cockpit-instruments", self.cockpit, unlit=True)
         self.indicators = indicators.node("cockpit-indicators", self.cockpit, unlit=True)
@@ -252,7 +286,8 @@ class PlayerEffects:
             self.tool.setPos(.350 + sin(t * 1.6) * .002 * motion + bob * .4,
                              1.02 - recoil * .013 * motion,
                              -.345 + sin(t * 2.0) * .002 * motion + bob
-                             + mining * .014 - recoil * .004 * motion)
+                             + mining * .014 - recoil * .004 * motion
+                             + sin(t * 2.3) * .004 * motion)
             self.tool.setHpr(10.0 + sin(t * 1.3) * .18 * motion,
                              6.0 + recoil * 1.2 * motion, -4.0 + bob * 45.0)
             scan = self._scan
@@ -260,12 +295,16 @@ class PlayerEffects:
             self.optics.setColorScale(pulse, pulse, pulse, 1)
             self.crown.setR(t * (12.0 + 100.0 * scan))
             self.crown.setColorScale(0.78 + scan * 0.22, 1, 1, 1)
+            self.scan_ring.setR(-t * (20.0 + 60.0 * scan))
+            self.scan_ring.setColorScale(0.72 + scan * 0.28, 1, 1, 1)
+            charge = 0.75 + 0.25 * sin(t * 5.0 + 1.0)
+            self._charge_strip.setColorScale(charge, charge, charge, 1)
             if mining > 0.03:
                 if not self._emission_visible:
                     self.emission.show()
                     self._emission_visible = True
                 self.emission.setScale(0.7 + recoil * 0.8)
-                self.emission.setColorScale(1, 1, 1, mining)
+                self.emission.setColorScale(0.8 + 0.5 * mining, 1, 1, mining)
             elif self._emission_visible:
                 self.emission.hide()
                 self._emission_visible = False

@@ -231,7 +231,6 @@ class WorldRenderer:
         self._entities = {}
         self._depleted = set()
         self._lights = []
-        self._fauna = {}
         self._spinners = []
         self._buildings = {}
         self._chunk_queue = []
@@ -243,12 +242,21 @@ class WorldRenderer:
         self._far_terrain = None
         self._far_job = None
         self._weather = None
+        self._dust = None
+        self._dust_biome = False
         self._stars = None
         self._sky_dome = None
         self._water = None
         self._fog = None
         self._ripples = None
+        self._foam = None
         self._sun_visual = None
+        self._coronas = []
+        self._haze = []
+        self._daylight = 1.0
+        self._sun_tint = (.68,.61,.51)
+        self._sun_h0 = -38
+        self._sun_p0 = -42
         self._ground_detail = None
         self._tree_models = None
         self._grass_models = None
@@ -283,6 +291,13 @@ class WorldRenderer:
         # software renderers.  The app is free to enable optional shaders.
         self.root.setTwoSided(False)
         self._last_light = -100
+        # Per-biome sun tint/angle; load_surface overrides from the table below.
+        self._sun_tint = (.68,.61,.51)
+        self._sun_h0 = -38
+        self._sun_p0 = -42
+        self._coronas = []
+        self._haze = []
+        self._daylight = 1.0
 
     def load_surface(self, planet, state):
         _validated_planet(planet)
@@ -295,6 +310,23 @@ class WorldRenderer:
         # Loader and world map both accept "ultra" (radius 4); keep in sync.
         self._radius = {"low":2,"medium":3,"high":4,"ultra":4}.get(quality,3)
         self._depleted = set(getattr(state,"depleted",{}).get(planet["id"],[]))
+        # Per-biome sun color/angle; AmbientLight+DirectionalLight only.
+        _biome_sun = {
+            "verdant": ((.68,.61,.51), -38, -42),
+            "desert": ((.80,.66,.45), -30, -38),
+            "frozen": ((.55,.63,.78), -46, -34),
+            "volcanic": ((.74,.44,.30), -34, -48),
+            "toxic": ((.56,.72,.48), -42, -40),
+            "oceanic": ((.60,.68,.60), -36, -44),
+            "crystalline": ((.70,.68,.82), -40, -36),
+            "fungal": ((.66,.56,.68), -44, -42),
+        }
+        _sun_cfg = _biome_sun.get(planet["biome"], ((.68,.61,.51), -38, -42))
+        self._sun_tint = _sun_cfg[0]
+        self._sun_h0 = _sun_cfg[1]
+        self._sun_p0 = _sun_cfg[2]
+        self._sun.setColor((*self._sun_tint, 1))
+        self._lights[1].setHpr(self._sun_h0, self._sun_p0, 0)
         self._style = STYLES.get(planet["biome"],"mushroom")
         self._ground_detail=terrain_detail_texture(self._seed_value)
         self._tree_models = [flora_mesh(self._style,planet["flora"],planet["accent"],self._seed_value+i)
@@ -374,8 +406,35 @@ class WorldRenderer:
         col=mix(col,mix(base,(.33,.31,.29),.63),max(0,slope-2.2)*.16)
         if z < planet["water_level"]+2.5:
             col=mix(col,(.72,.71,.53),.4)
-        if planet["biome"] == "frozen" and z > 19:
+        biome = planet["biome"]
+        water_level = planet["water_level"]
+        # Altitude banding: pale peaks (non-frozen) and darker valleys.
+        if biome != "frozen" and z > 26:
+            col=mix(col,(.82,.83,.80),min(.6,(z-26)*.05))
+        if z < 14:
+            col=mix(col,shade(base,.72),min(.45,(14-z)*.05))
+        if biome == "frozen" and z > 19:
             col=mix(col,(.86,.94,.97),min(.5,(z-19)*.04))
+        elif biome == "volcanic":
+            # Dark basalt fields with ember cracks glowing near low ground.
+            basalt = sin(x*.06+seed_value*.3)*cos(y*.055+1.1)
+            if basalt > 0:
+                col=mix(col,(.12,.10,.10),basalt*.45)
+            ember = sin(x*.51+seed_value)*sin(y*.43+seed_value*.7)
+            if ember > .72 and z < water_level+9:
+                col=mix(col,(1.0,.35,.10),(ember-.72)*2.4)
+        elif biome == "crystalline":
+            sparkle = sin(x*.91+seed_value)*cos(y*.83+seed_value*.5)
+            if sparkle > .90:
+                col=mix(col,(.95,.97,1.0),(sparkle-.90)*6.0)
+        elif biome == "toxic":
+            # Sickly yellow-green pools settle in flat low ground.
+            if slope < 1.2 and z < water_level+5:
+                pool = sin(x*.21+seed_value)*cos(y*.19+4.2)
+                if pool > -.1:
+                    col=mix(col,(.55,.70,.20),.5)
+        elif biome == "oceanic" and z < water_level+3.5:
+            col=mix(col,(.76,.74,.55),.55)
         if 5<y<65:
             trail_x=32*y/62+sin(y*.065)*2.5
             trail=max(0,1-abs(x-trail_x)/3.8)
@@ -466,6 +525,9 @@ class WorldRenderer:
         node=yield from mesh._node_steps("distant-landscape",self.root)
         node.setTexture(self._ground_detail)
         node.setZ(-4.0)
+        # Haze blend toward the sky color so the horizon melts into the fog.
+        haze = mix((1,1,1), self.planet["sky"][:3], .28)
+        node.setColorScale(haze[0], haze[1], haze[2], 1)
         if self._far_terrain:
             self._far_terrain.removeNode()
         self._far_terrain=node
@@ -706,6 +768,15 @@ class WorldRenderer:
         self._ripples=ripples.node("water-wind-ripples",self._water,unlit=True)
         self._ripples.setTransparency(TransparencyAttrib.MAlpha)
         self._ripples.setDepthWrite(False)
+        # Shoreline foam: a second translucent white-sand layer just above water.
+        foam=Mesh()
+        foam_col=(*mix((1,1,1),self.planet["sky"][:3],.25)[:3],.18)
+        for i in range(28):
+            y=-600+i*47
+            foam.quad((-850,y,.035),(850,y+9,.035),(850,y+9.1,.035),(-850,y+.1,.035),foam_col)
+        self._foam=foam.node("water-shore-foam",self._water,unlit=True)
+        self._foam.setTransparency(TransparencyAttrib.MAlpha)
+        self._foam.setDepthWrite(False)
 
     def _sky_sphere(self):
         mesh=Mesh()
@@ -716,14 +787,22 @@ class WorldRenderer:
             base=mix(mix(sky,(.86,.71,.51),.26),mix(shade(sky,.42),(.025,.07,.18),.22),h**.55)
             front=math.sin(x*12+y*7+1.4*math.sin(z*11))*math.cos(z*18+y*3)
             streak=max(0,front-.51)*max(0,1-abs(h-.35)*2.1)
-            return mix(base,(.80,.85,.89),streak*.29)
+            col=mix(base,(.80,.85,.89),streak*.29)
+            # Second horizon haze band: warm tint hugging h≈0.05-0.18.
+            haze=max(0,1-abs(h-.11)*6.0)
+            col=mix(col,mix(sky,(.95,.72,.50),.55),haze*.38)
+            # Faint horizontal high cirrus streaks.
+            cirrus=math.sin(x*4.0+y*9.0+z*46.0)*math.sin(x*13.0-y*5.0+z*31.0)
+            band=max(0,1-abs(h-.52)*3.2)
+            cirrus=max(0,cirrus-.62)*band
+            col=mix(col,(.88,.90,.93),min(.28,cirrus*.9))
+            return col
         mesh.sphere((0,0,0),(18000,18000,18000),sky,96,48,color_fn=color,smooth=True)
         node=mesh.node("gradient-atmosphere",self.sky_root,two_sided=True,unlit=True)
         node.setBin("background",0)
         node.setDepthWrite(False)
         node.setDepthTest(False)
         return node
-
     def _starfield(self,seed,count=700):
         rng=random.Random(seed)
         mesh=Mesh()
@@ -739,7 +818,34 @@ class WorldRenderer:
             side.normalize()
             up=side.cross(direction)
             size=rng.uniform(2,8)*(1.8 if rng.random()<.05 else 1)
-            c=mix((.6,.78,1),(1,.82,.53),rng.random())
+            pick=rng.random()
+            if pick < .4:
+                c=mix((.62,.76,1.0),(.92,.95,1.0),rng.random())
+            elif pick < .75:
+                c=(1.0,1.0,1.0)
+            else:
+                c=mix((1.0,.90,.70),(1.0,.80,.55),rng.random())
+            mesh.quad(tuple(center-side*size-up*size),tuple(center+side*size-up*size),
+                      tuple(center+side*size+up*size),tuple(center-side*size+up*size),c)
+        # Faint milky-way band: 250 tiny dim quads along a tilted great circle.
+        tilt=.9
+        axis_u=Vec3(1,0,0)
+        axis_v=Vec3(0,math.cos(tilt),math.sin(tilt))
+        axis_w=Vec3(0,-math.sin(tilt),math.cos(tilt))
+        for _ in range(250):
+            a=rng.random()*math.tau
+            radius=rng.uniform(12000,15000)
+            center=axis_u*(math.cos(a)*radius)+axis_v*(math.sin(a)*radius)+axis_w*rng.uniform(-500,500)
+            direction=Vec3(center[0],center[1],center[2])
+            direction.normalize()
+            side=direction.cross(Vec3(0,0,1))
+            if side.lengthSquared()<.001:
+                side=Vec3(1,0,0)
+            side.normalize()
+            up=side.cross(direction)
+            size=rng.uniform(1,2.6)
+            dim=.22+rng.random()*.22
+            c=(dim*.95,dim,dim*1.12)
             mesh.quad(tuple(center-side*size-up*size),tuple(center+side*size-up*size),
                       tuple(center+side*size+up*size),tuple(center-side*size+up*size),c)
         node=mesh.node("stars",self.sky_root,two_sided=True,unlit=True)
@@ -766,8 +872,14 @@ class WorldRenderer:
         self._sky_dome=self._sky_sphere()
         self._stars=self._starfield(self._seed_value,500)
         self._sun_visual=self._disc("warm-distant-sun",(2500,4000,2400),180,(1,.93,.74,1))
+        self._coronas=[]
         for scale,alpha in ((1.25,.10),(1.65,.045),(2.4,.022)):
-            self._disc("sun-corona",(2500,4002,2400),180*scale,(1,.78,.45,alpha))
+            self._coronas.append(self._disc("sun-corona",(2500,4002,2400),180*scale,(1,.78,.45,alpha)))
+        # Two large translucent horizon haze discs (cheap billboards).
+        self._haze=[
+            self._disc("horizon-haze",(-3200,5200,300),1500,(*mix(self.planet["sky"],(1,.8,.55),.4)[:3],.10)),
+            self._disc("horizon-haze-far",(3200,5200,150),2100,(*mix(self.planet["sky"],(1,.75,.5),.3)[:3],.07)),
+        ]
         p=dict(self.planet)
         p["ground"]=mix(self.planet["accent"],(.5,.55,.72),.45)[:3]
         p["water"]=mix(self.planet["sky"],(.06,.11,.23),.65)[:3]
@@ -820,16 +932,32 @@ class WorldRenderer:
         rng=random.Random(self._seed_value+551)
         mesh=Mesh()
         snowy=self.planet["biome"]=="frozen"
-        for _ in range(90):
+        count=140 if snowy else 90
+        for _ in range(count):
             x,y,z=rng.uniform(-34,34),rng.uniform(-34,34),rng.uniform(-12,28)
-            w=.07 if snowy else .025
-            length=.12 if snowy else .75
+            w=(.07 if snowy else .025)*rng.uniform(.7,1.6)
+            length=(.12 if snowy else .75)*rng.uniform(.7,1.5)
             mesh.quad((x-w,y,z),(x+w,y,z),(x+w+.2,y,z+length),(x-w+.2,y,z+length),
                       (.8,.88,.94,.5 if snowy else .27))
         self._weather=mesh.node("atmospheric-particles",self.root,two_sided=True,unlit=True)
         self._weather.setTransparency(TransparencyAttrib.MAlpha)
         self._weather.setDepthWrite(False)
         self._weather.hide()
+        # Ambient dust motes for desert/volcanic: small warm specks.
+        dust=Mesh()
+        for _ in range(60):
+            x,y,z=rng.uniform(-30,30),rng.uniform(-30,30),rng.uniform(-8,24)
+            s=rng.uniform(.03,.09)
+            dust.quad((x-s,y,z-s),(x+s,y,z-s),(x+s,y,z+s),(x-s,y,z+s),(.95,.82,.60,.20))
+        self._dust=dust.node("desert-dust-motes",self.root,two_sided=True,unlit=True)
+        self._dust.setTransparency(TransparencyAttrib.MAlpha)
+        self._dust.setDepthWrite(False)
+        self._dust_biome=self.planet["biome"] in ("desert","volcanic")
+        if self._dust_biome:
+            self._dust.show()
+            self._dust.setColorScale(1,1,1,.35)
+        else:
+            self._dust.hide()
 
     def load_orbit(self, system, state):
         _validated_system(system)
@@ -843,12 +971,14 @@ class WorldRenderer:
         self._stars=self._starfield(int(system["id"])*773+47,1300)
         # Translucent, asymmetrical nebula ribbons give space a sense of depth.
         nebula=Mesh()
-        for band in range(4):
+        palette=[(.10,.18,.34,.075),(.24,.11,.29,.05),(.10,.35,.34,.06),
+                 (.38,.24,.10,.055),(.16,.22,.44,.09),(.30,.14,.30,.04)]
+        for band in range(6):
             for i in range(50):
                 x=-16000+i*640
                 z=2600*math.sin(i*.075+band*.2)+band*540-500
                 width=800+250*math.sin(i*.18)
-                col=((.10,.18,.34,.075) if band%2 else (.24,.11,.29,.05))
+                col=palette[band]
                 nebula.quad((x,17000,z-width),(x+650,17000,z-width+150),
                             (x+650,17000,z+width+150),(x,17000,z+width),col)
         nebnode=nebula.node("nebula-ribbons",self.sky_root,two_sided=True,unlit=True)
@@ -856,6 +986,34 @@ class WorldRenderer:
         nebnode.setBin("background",0)
         nebnode.setDepthWrite(False)
         nebnode.setDepthTest(False)
+        # 150 faint distant galaxies: tiny dim quads scattered on the far shell.
+        grng=random.Random(int(system["id"])*311+7)
+        galaxies=Mesh()
+        for _ in range(150):
+            z=grng.uniform(-1,1)
+            angle=grng.random()*math.tau
+            r=math.sqrt(max(0,1-z*z))
+            direction=Vec3(r*math.cos(angle),r*math.sin(angle),z)
+            center=direction*grng.uniform(13500,16000)
+            side=direction.cross(Vec3(0,0,1))
+            if side.lengthSquared()<.001:
+                side=Vec3(1,0,0)
+            side.normalize()
+            up=side.cross(direction)
+            size=grng.uniform(3,7)
+            dim=grng.uniform(.10,.22)
+            tint=grng.random()
+            if tint < .5:
+                c=(dim,dim*1.05,dim*1.3)
+            else:
+                c=(dim*1.25,dim*1.05,dim*.85)
+            galaxies.quad(tuple(center-side*size-up*size),tuple(center+side*size-up*size),
+                          tuple(center+side*size+up*size),tuple(center-side*size+up*size),c)
+        galnode=galaxies.node("distant-galaxies",self.sky_root,two_sided=True,unlit=True)
+        galnode.setTransparency(TransparencyAttrib.MAlpha)
+        galnode.setBin("background",0)
+        galnode.setDepthWrite(False)
+        galnode.setDepthTest(False)
         for i,planet in enumerate(system["planets"]):
             node=self._planet_model(planet,self.root,planet["size"],clouds=True,rings=i in (0,2))
             node.setPos(*planet["position"])
@@ -960,6 +1118,16 @@ class WorldRenderer:
             if self._water:
                 self._water.setPos(pos[0],pos[1],self.planet["water_level"])
                 self._ripples.setY(sin(elapsed*.055)*11)
+                self._ripples.setX(cos(elapsed*.043)*7)
+                pulse=.75+.25*sin(elapsed*.5)
+                glint=max(0,self._daylight-.55)/.45
+                tint=self._sun_tint
+                self._ripples.setColorScale(1+glint*(tint[0]-.5)*.6,1+glint*(tint[1]-.5)*.6,
+                                            1+glint*(tint[2]-.5)*.6,pulse)
+                if self._foam is not None:
+                    self._foam.setY(sin(elapsed*.07+1.3)*9)
+                    self._foam.setX(cos(elapsed*.05)*6)
+                    self._foam.setColorScale(1,1,1,(.5+.5*self._daylight)*pulse)
             entities=self._entities
             height=self.height
             degrees=math.degrees
@@ -974,10 +1142,13 @@ class WorldRenderer:
                 dphase=data["phase"]
                 t=elapsed*.105+dphase
                 x,y=x0+cos(t)*4.2,y0+sin(t)*3.5
-                hover=.9+sin(elapsed*1.4+dphase)*.28 if data["variant"]==1 else 0
-                z=height(x,y)+sin(elapsed*3+dphase)*.045+hover
+                variant=data["variant"]
+                hover=.9+sin(elapsed*1.4+dphase)*.28 if variant==1 else 0
+                bob=sin(elapsed*(2.0+variant*.5)+dphase)*.12*((variant+1)/3.0)
+                z=height(x,y)+sin(elapsed*3+dphase)*.045+hover+bob
                 heading=-degrees(t)
-                roll=sin(elapsed*2.8+dphase)*1.5
+                # Banking: roll into the turn plus a gentle per-variant sway.
+                roll=sin(elapsed*2.8+dphase)*1.5+cos(t)*2.0*(0.7+variant*.3)
                 last=data.get("last")
                 if last is not None and abs(x-last[0])<.001 and abs(y-last[1])<.001 and abs(z-last[2])<.001 and abs(heading-last[3])<.001 and abs(roll-last[4])<.001:
                     continue
@@ -993,25 +1164,40 @@ class WorldRenderer:
                 self._weather.setColorScale(1,1,1,intensity)
             else:
                 self._weather.hide()
+            if self._dust is not None and self._dust_biome:
+                self._dust.show()
+                self._dust.setPos(pos[0],pos[1],pos[2])
+                self._dust.setColorScale(1,1,1,.10+.30*self._daylight+intensity*.25)
+            elif self._dust is not None:
+                self._dust.hide()
             if elapsed-self._last_light>.2 or elapsed<self._last_light:
                 # Start in a generous morning; a full cycle is several minutes.
                 phase=elapsed/max(60,self.planet["day_length"])*math.tau+.78
                 altitude=sin(phase)
                 daylight=max(.12,min(1,(altitude+.17)*1.15))
                 twilight=max(0,1-abs(altitude)*3.5)
+                sunset=max(0,1-abs(altitude+.06)*4.2)
+                night=max(0,min(1,-altitude*2.2))
                 storm_dark=1-intensity*.42
+                tint=self._sun_tint
                 self._ambient.setColor(((.12+daylight*.19)*storm_dark,
-                    (.17+daylight*.20)*storm_dark,(.26+daylight*.18)*storm_dark,1))
-                self._sun.setColor((.66*daylight*storm_dark,.59*daylight*storm_dark,.47*daylight*storm_dark,1))
-                self._lights[1].setHpr(-38+math.degrees(phase)*.35,-max(8,altitude*64),0)
+                    (.17+daylight*.20)*storm_dark,(.26+daylight*.18+(1-daylight)*.06)*storm_dark,1))
+                self._sun.setColor((tint[0]*daylight*storm_dark,tint[1]*daylight*storm_dark,tint[2]*daylight*storm_dark,1))
+                self._lights[1].setHpr(self._sun_h0+math.degrees(phase)*.35,-max(8,altitude*64)+self._sun_p0+42,0)
                 tone=mix((.12,.19,.34),(1,1,1),daylight)
                 self._sky_dome.setColorScale(tone[0]*storm_dark,tone[1]*storm_dark,tone[2]*storm_dark,1)
-                horizon=mix(self.planet["sky"],(.9,.47,.32),twilight*.3)
+                horizon=mix(self.planet["sky"],(.95,.45,.25),twilight*.45+sunset*.25)
+                horizon=mix(horizon,(.05,.08,.22),night*.55)
                 horizon=shade(horizon,(.2+.8*daylight)*storm_dark)
                 self._fog.setColor(*horizon[:3])
                 self._fog.setLinearRange(95-intensity*45,self._radius*CHUNK_SIZE+95-intensity*115)
                 self._stars.setColorScale(1,1,1,max(0,.92-daylight))
                 self._sun_visual.setColorScale(1,.8+daylight*.2,.65+daylight*.35,daylight)
+                for corona in self._coronas:
+                    corona.setColorScale(1,1,1,max(.04,daylight))
+                for haze in self._haze:
+                    haze.setColorScale(1,1,1,.35+.65*max(twilight,sunset))
+                self._daylight=daylight
                 self.app.setBackgroundColor(*horizon)
                 self._last_light=elapsed
         if dt != 0:
@@ -1047,12 +1233,18 @@ class WorldRenderer:
         self._far_center=None
         self._far_terrain=None
         self._weather=None
+        self._dust=None
+        self._dust_biome=False
         self._water=None
         self._stars=None
         self._sky_dome=None
         self._fog=None
         self._ripples=None
+        self._foam=None
         self._sun_visual=None
+        self._coronas=[]
+        self._haze=[]
+        self._daylight=1.0
         self._ground_detail=None
         self._tree_models=None
         self._grass_models=None

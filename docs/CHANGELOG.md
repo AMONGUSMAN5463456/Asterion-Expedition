@@ -20,6 +20,18 @@
   with a saved, immediate on/off control in Settings.
 - Kept existing material colours and HUD rendering unchanged. AO is disabled
   in orbit and falls back to normal rendering when shaders are unavailable.
+- Per-biome surface sunlight, warm twilight horizons with blue nights, hazier
+  skies with cirrus, varied stars with a milky-way band, altitude and biome
+  ground tinting, shoreline foam with sun glint, desert/volcanic dust motes,
+  and a richer orbit nebula with distant galaxies.
+- Sharper continents with archipelagos, latitude ice caps, dune banding,
+  volcanic ember veins, ocean depth shading, baked storm spirals, tinted soil
+  grain, and a thicker atmospheric limb glow.
+- Two-tone flora, grass, crystals, rocks, and fauna details; lit windows,
+  railings, and beacon accents on structures, ship, and station.
+- Scanner holo ring with charge lights and idle motion on the survey tool,
+  canopy struts with HUD warmth in the cockpit, and a core/halo mining beam
+  with an impact flare.
 
 ## Save recovery
 
