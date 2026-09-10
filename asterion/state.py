@@ -41,6 +41,7 @@ _CONSUMABLES = {
 _EVENT_RE = re.compile(r"[A-Za-z0-9_:-]{1,80}")
 _PLANET_RE = re.compile(r"s(?:[0-9]|1[0-9]|2[0-3])-p[0-3]")
 _ORBIT_RE = re.compile(r"orbit:(?:[0-9]|1[0-9]|2[0-3])")
+_CTRL_RE = re.compile(r"[\x00-\x1f]")
 _ITEM_INDEX = {name: index for index, name in enumerate(ITEMS)}
 
 
@@ -63,9 +64,8 @@ def _number(value, default=0.0, low=0.0, high=1e12):
 def _quantity(value):
     return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= MAX_COUNT
 
-
 def _identifier(value, maximum=160):
-    return isinstance(value, str) and 0 < len(value) <= maximum and not any(ord(c) < 32 for c in value)
+    return isinstance(value, str) and 0 < len(value) <= maximum and _CTRL_RE.search(value) is None
 
 
 def _position(value, fallback):
@@ -97,14 +97,17 @@ def _small_record(record):
     result = {}
     if not isinstance(record, dict):
         return result
+    get = record.get
     for key in ("name", "kind", "description", "planet_id", "planet", "biome", "resource", "notes"):
-        if isinstance(record.get(key), str):
-            result[key] = record[key][:600]
+        value = get(key)
+        if isinstance(value, str):
+            result[key] = value[:600]
     for key in ("system_id", "seed", "temperature", "reward", "elapsed"):
-        if isinstance(record.get(key), (int, float)) and not isinstance(record[key], bool):
-            result[key] = _number(record[key], 0, -1e9, 1e12)
-    if _valid_position(record.get("pos")):
-        result["pos"] = list(record["pos"])
+        value = get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            result[key] = _number(value, 0, -1e9, 1e12)
+    if _valid_position(get("pos")):
+        result["pos"] = list(get("pos"))
     return result
 
 
@@ -657,8 +660,8 @@ class GameState:
         backup_temporary = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2, allow_nan=False)
-            if len(payload.encode("utf-8")) > MAX_SAVE_BYTES:
+            payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
+            if len(payload) > MAX_SAVE_BYTES:
                 return False, "Save is too large; the previous save remains untouched."
             # Only copy a valid prior primary into the backup. A corrupt primary
             # must never overwrite the good file recovered on the previous load.
@@ -676,7 +679,7 @@ class GameState:
                     # A readable but invalid primary is intentionally skipped;
                     # backup I/O failure also does not damage the primary.
                     pass
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+            with tempfile.NamedTemporaryFile("wb", dir=path.parent,
                                              prefix=path.name + ".writing-", delete=False) as stream:
                 temporary = Path(stream.name)
                 stream.write(payload)

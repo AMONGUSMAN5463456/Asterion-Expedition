@@ -342,8 +342,6 @@ class PlayerController(DirectObject):
             return 0.0, 0.0
 
     def _key(self, key):
-        if key == "control":
-            return bool(self.keys.get(key) or self.keys.get("ctrl"))
         return bool(self.keys.get(key, False))
 
     def _axis(self, positive, negative):

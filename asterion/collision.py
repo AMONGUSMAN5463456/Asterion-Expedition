@@ -349,6 +349,10 @@ class CollisionWorld:
         self._shape_cells = {}
         self._large = set()
         self._query_seen = set()
+        # Cached per-cell iteration order. Buckets only change in
+        # set_group/remove_group/clear, which invalidate the touched cells,
+        # so repeated queries over a static world never re-sort.
+        self._order = {}
         # Recover-skip cache: the center point, shape, ignore set, and shape
         # generation of the last verified penetration-free move end. A move
         # starting exactly there skips the standalone recover pass; its sweep
@@ -445,6 +449,7 @@ class CollisionWorld:
                 self._shape_cells[key] = cells
                 for cell in cells:
                     self._grid.setdefault(cell, set()).add(key)
+                    self._order.pop(cell, None)
 
     def remove_group(self, group_id):
         if not isinstance(group_id, str):
@@ -457,15 +462,26 @@ class CollisionWorld:
                 bucket.discard(key)
                 if not bucket:
                     del self._grid[cell]
+                self._order.pop(cell, None)
         self._generation += 1
-
     def clear(self):
         self._groups.clear()
         self._shapes.clear()
         self._grid.clear()
         self._shape_cells.clear()
         self._large.clear()
+        self._order.clear()
         self._generation += 1
+
+    def _members(self, cell):
+        members = self._order.get(cell)
+        if members is None:
+            bucket = self._grid.get(cell)
+            if not bucket:
+                return ()
+            members = tuple(sorted(bucket)) if len(bucket) > 1 else tuple(bucket)
+            self._order[cell] = members
+        return members
 
     def _query(self, low, high, ignore):
         cells = self._cell_range(low, high, _MAX_QUERY_CELLS)
@@ -475,8 +491,14 @@ class CollisionWorld:
             # reduces by minimum gap/fraction or existence, so key order only
             # breaks exact ties.
             ordered = shapes.keys()
+        elif len(cells) == 1:
+            # One cell holds each key once (large shapes live outside the
+            # grid), so the seen-set would only re-add every key. The cached
+            # order below matches the multi-cell path exactly.
+            ordered = list(self._members(cells[0]))
+            if self._large:
+                ordered[0:0] = sorted(self._large)
         else:
-            grid = self._grid
             seen = self._query_seen
             seen.clear()
             ordered = []
@@ -485,11 +507,7 @@ class CollisionWorld:
                     seen.add(key)
                     ordered.append(key)
             for cell in cells:
-                bucket = grid.get(cell)
-                if not bucket:
-                    continue
-                members = sorted(bucket) if len(bucket) > 1 else bucket
-                for key in members:
+                for key in self._members(cell):
                     if key not in seen:
                         seen.add(key)
                         ordered.append(key)

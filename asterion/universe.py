@@ -40,11 +40,11 @@ def _cached_phase(seed):
 
 
 def _phase_for_seed(seed):
+    # _cached_phase hashes its argument; only unhashable seeds raise TypeError.
     try:
-        hash(seed)
+        return _cached_phase(seed)
     except TypeError:
         return _DEFAULT_PHASE
-    return _cached_phase(seed)
 
 
 def _index(value, maximum, label):

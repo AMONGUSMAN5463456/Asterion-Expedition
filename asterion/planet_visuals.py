@@ -96,6 +96,26 @@ class PlanetPaint:
         cos=math.cos
         exp=math.exp
         sqrt=math.sqrt
+        # Hoisted once per texel: attribute lookups dominate this hot path
+        # (a full 512x256 bake calls color() ~131k times).
+        biome=self.biome
+        threshold=self.threshold
+        deep_water=self.deep_water
+        shallow_water=self.shallow_water
+        coast=self.coast
+        vegetation=self.vegetation
+        highland=self.highland
+        beach=self.beach
+        dune_shadow=self.dune_shadow
+        dune_light=self.dune_light
+        basalt=self.basalt
+        crystalline_shadow=self.crystalline_shadow
+        fungal_shadow=self.fungal_shadow
+        ground=self.ground
+        flora=self.flora
+        accent=self.accent
+        clouds=self.clouds
+        cloud_density=self.cloud_density
         # Rotated domain warping produces irregular connected continental
         # shelves, island arcs and eroded highlands instead of latitude bands.
         warp=noise(x*2+p,y*2+q,z*2+r)
@@ -110,25 +130,16 @@ class PlanetPaint:
         # scattering island chains through the oceans.
         arch=noise(a*4.3+u,b*4.3+s,c*4.3+t)
         elevation=low_s+.28*medium+.095*fine+.06*arch
-        biome=self.biome
-        height=elevation-self.threshold
-        sea=mix(self.deep_water,self.shallow_water,smooth(-.47,-.045,height))
-        # Darker trenches in deep water; sun-glint sparkle in the shallows.
-        deep_w=1-smooth(-.50,-.18,height)
-        trench=smooth(.15,.75,fine*.5+medium*.5)*deep_w
-        sea=shade(sea,1-.22*trench)
-        shallow_w=smooth(-.14,-.02,height)*(1-smooth(.0,.06,height))
-        sparkle=smooth(.55,.92,medium*.6+fine*.4)*shallow_w
-        sea=mix(sea,(.96,.98,1.0),sparkle*.30)
-        sea=mix(sea,self.coast,smooth(-.10,.01,height)*.70)
-        land=mix(self.vegetation,self.highland,smooth(.025,.46,height))
+        height=elevation-threshold
+        sea=mix(deep_water,shallow_water,smooth(-.47,-.045,height))
+        land=mix(vegetation,highland,smooth(.025,.46,height))
         if biome=="desert":
             dunes=.5+.5*sin((x+y*.45)*53+z*22+medium*6)
-            land=mix(self.dune_shadow,self.dune_light,.25+.65*dunes)
+            land=mix(dune_shadow,dune_light,.25+.65*dunes)
             band=.5+.5*sin(z*47+medium*7+x*4)
             land=shade(land,.96+.08*band)
         elif biome=="volcanic":
-            land=mix((.055,.042,.065),self.basalt,.4+.4*medium)
+            land=mix((.055,.042,.065),basalt,.4+.4*medium)
             fissure=(1-smooth(.012,.075,abs(medium+.23*fine)))*smooth(-.1,.22,low)
             land=mix(land,(1,.22,.025),fissure*.92)
             ember=(1-smooth(.004,.035,abs(fine-.13)))*(1-smooth(.20,.55,abs(z)))
@@ -137,17 +148,17 @@ class PlanetPaint:
             land=mix((.22,.48,.66),(.78,.89,.93),smooth(-.12,.37,elevation))
             land=mix(land,(.10,.31,.47),(1-smooth(.008,.045,abs(fine)))*.25)
         elif biome=="crystalline":
-            land=mix(self.crystalline_shadow,self.accent,smooth(.10,.62,elevation)*.62)
+            land=mix(crystalline_shadow,accent,smooth(.10,.62,elevation)*.62)
         elif biome=="fungal":
-            land=mix(self.fungal_shadow,self.ground,smooth(-.1,.45,medium))
+            land=mix(fungal_shadow,ground,smooth(-.1,.45,medium))
             blotch=noise(x*9+u+medium*2,y*9+s,z*9+t)
-            land=mix(land,self.accent,smooth(.25,.70,blotch)*.35)
+            land=mix(land,accent,smooth(.25,.70,blotch)*.35)
         elif biome=="toxic":
             blotch=noise(x*9+u+medium*2,y*9+s,z*9+t)
-            land=mix(land,self.flora,smooth(.20,.65,blotch)*.30)
-            land=mix(land,self.accent,smooth(.45,.80,fine)*.25)
+            land=mix(land,flora,smooth(.20,.65,blotch)*.30)
+            land=mix(land,accent,smooth(.45,.80,fine)*.25)
         # Narrow beaches and ridges read clearly at normal orbit distances.
-        land=mix(self.beach,land,smooth(.008,.062,height))
+        land=mix(beach,land,smooth(.008,.062,height))
         base=mix(sea,land,smooth(-.012,.014,height))
         relief=.88+.12*smooth(-.2,.4,fine)+.10*medium
         base=shade(base,relief)
@@ -159,7 +170,7 @@ class PlanetPaint:
         if biome not in ("desert","volcanic","toxic"):
             ice=smooth(.79,.93,az+.04*medium)
             base=mix(base,(.80,.91,.94),ice*.96)
-        if self.clouds:
+        if clouds:
             # Twisted weather fronts and small puffs are baked into the same
             # opaque surface: no near-coincident transparent cloud sphere.
             # Two large spiral storms swirl the sample point around fixed 3D
@@ -185,7 +196,7 @@ class PlanetPaint:
             curl=.45*sin(qz*8+s)+.26*sin(qy*5+t)
             front=noise(qx*6.2+p+curl,qy*6.2+q-curl,qz*6.2+r)
             small=noise(qx*17+s,qy*17+t,qz*17+u)
-            density=self.cloud_density
+            density=cloud_density
             cover=smooth(.24,.67,front+small*.26)*density
             wisps=(1-smooth(.015,.10,abs(front-.11)))*smooth(.04,.45,small)*density*.42
             cover=min(.85,cover+wisps)

@@ -300,9 +300,16 @@ class GameUI:
         if self._measure(text, size, bold)[0] <= width:
             result = text
         else:
-            while text and self._measure(text + "...", size, bold)[0] > width:
-                text = text[:-1]
-            result = text.rstrip() + "..."
+            # Bisect the longest fitting prefix: one-char chopping costs a
+            # TextNode measure per character (~seconds for multi-KB strings).
+            lo, hi = 0, len(text)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if self._measure(text[:mid] + "...", size, bold)[0] <= width:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            result = text[:lo].rstrip() + "..."
         if len(self._short_cache) >= 1024:
             self._short_cache.clear()
         self._short_cache[key] = result
@@ -800,17 +807,24 @@ class GameUI:
         if self._destroyed:
             return
         panel = panel if isinstance(panel, dict) else {"title": str(panel)}
+        if self._panel_kind == "panel" and panel == self._panel:
+            # Redundant resend: skip the deepcopy and the rebuild entirely.
+            # Comparing first is safe; the stored model is a private copy.
+            if self._available:
+                self._layout()
+                if self.menu is None:
+                    self._build_panel()
+                self._apply_visibility()
+            return
         try:
             model = copy.deepcopy(panel)
         except (TypeError, ValueError):
             model = dict(panel)
-        unchanged = self._panel_kind == "panel" and model == self._panel
         self._panel = model
         self._panel_kind = "panel"
         if self._available:
             self._layout()
-            if not unchanged or self.menu is None:
-                self._build_panel()
+            self._build_panel()
             self._apply_visibility()
 
     def _build_panel(self):

@@ -851,23 +851,35 @@ class ExpeditionApp(ShowBase):
         ex, ey, ez = epos[0], epos[1], epos[2] + min(entity.get("radius", 2) * .5, 3)
         endpoints = (sx, sy, sz, ex, ey, ez)
         previous_endpoints = self._beam_endpoints
-        moved = True
-        if previous_endpoints is not None:
-            moved = any(abs(a - b) > 1e-4 for a, b in zip(endpoints, previous_endpoints))
-        if moved:
-            if self.beam is None:
-                self.beam = self.render.attachNewNode("mining-beam")
-                self.beam.setLightOff()
-                self.beam.setFogOff()
-            elif self._beam_child is not None:
+        if previous_endpoints is None:
+            moved = True
+        else:
+            # Squared-distance gate (~2 cm combined): aiming sway below this
+            # keeps the existing line geometry; only the flare billboard
+            # repositions every frame. The old 1e-4-per-component test rebuilt
+            # two GeomNodes plus a CardMaker quad nearly every frame.
+            ds = 0.0
+            for a, b in zip(endpoints, previous_endpoints):
+                d = a - b
+                ds += d * d
+                if ds > 0.0004:
+                    break
+            moved = ds > 0.0004
+        if self.beam is None:
+            self.beam = self.render.attachNewNode("mining-beam")
+            self.beam.setLightOff()
+            self.beam.setFogOff()
+            moved = True
+        elif moved:
+            if self._beam_child is not None:
                 self._beam_child.removeNode()
                 self._beam_child = None
-                if getattr(self, "_beam_halo", None) is not None:
-                    self._beam_halo.removeNode()
-                    self._beam_halo = None
-                if getattr(self, "_beam_flare", None) is not None:
-                    self._beam_flare.removeNode()
-                    self._beam_flare = None
+            if getattr(self, "_beam_halo", None) is not None:
+                self._beam_halo.removeNode()
+                self._beam_halo = None
+            # The flare quad is persistent: it only repositions, so it is
+            # never destroyed here.
+        if moved:
             halo = LineSegs("mining-beam-halo")
             halo.setThickness(7)
             halo.setColor(0.10, 0.55, 0.75, 0.35)
@@ -882,10 +894,11 @@ class ExpeditionApp(ShowBase):
             line.moveTo(sx, sy, sz)
             line.drawTo(ex, ey, ez)
             self._beam_child = self.beam.attachNewNode(line.create())
+            self._beam_endpoints = endpoints
+        if getattr(self, "_beam_flare", None) is None:
             flare_maker = CardMaker("mining-beam-flare")
             flare_maker.setFrame(-0.5, 0.5, -0.5, 0.5)
             self._beam_flare = self.beam.attachNewNode(flare_maker.generate())
-            self._beam_flare.setPos(ex, ey, ez)
             self._beam_flare.setScale(0.9)
             self._beam_flare.setBillboardPointEye()
             self._beam_flare.setTransparency(TransparencyAttrib.MAlpha)
@@ -893,9 +906,7 @@ class ExpeditionApp(ShowBase):
             self._beam_flare.setLightOff()
             self._beam_flare.setFogOff()
             self._beam_flare.setColor(0.7, 1.0, 1.0, 0.85)
-            self._beam_endpoints = endpoints
-        if getattr(self, "_beam_flare", None) is not None:
-            self._beam_flare.setScale(0.8 + 0.25 * (0.5 + 0.5 * math.sin(self.mine_time * 18.0)))
+        self._beam_flare.setPos(ex, ey, ez)
         duration = max(.25, float(entity.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35))
         previous = self.mine_time
         self.mine_time += dt
@@ -934,12 +945,21 @@ class ExpeditionApp(ShowBase):
             v["oxygen"] = min(100, v["oxygen"] + dt * 3)
             v["hazard"] = min(100, v["hazard"] + dt * 5)
             v["shield"] = min(100, v["shield"] + dt * .5)
-            return
-        sheltered = self.ship is not None and distance(self.controller.position, self.game.ship_position) < 13
+        p = self.controller.position
+        px, py, pz = p.x, p.y, p.z
+        # Squared-distance shelter checks: identical to distance() < r but
+        # without the per-frame sqrt and isinstance dispatch in distance().
+        sheltered = False
+        if self.ship is not None:
+            sp = self.game.ship_position
+            dx, dy, dz = px - sp[0], py - sp[1], pz - sp[2]
+            sheltered = dx * dx + dy * dy + dz * dz < 169
         if self.nearby and self.nearby["kind"] in ("outpost", "habitat", "station"):
             sheltered = True
         for building in self.game.bases.get(self.planet["id"], []):
-            if distance(self.controller.position, building["pos"]) < 22:
+            bpos = building["pos"]
+            dx, dy, dz = px - bpos[0], py - bpos[1], pz - bpos[2]
+            if dx * dx + dy * dy + dz * dz < 484:
                 if building["kind"] == "habitat":
                     sheltered = True
                 elif building["kind"] == "solar":
@@ -1198,7 +1218,7 @@ class ExpeditionApp(ShowBase):
                 prompt = "Hold LMB extract   C catalogue" if target_distance <= reach else f"C catalogue   Approach within {reach} m to extract"
             else:
                 prompt = "C catalogue specimen" if entity["kind"] == "fauna" else "Approach the site and press E to interact"
-        if mode == "surface" and self.ship is not None and distance(p, self.game.ship_position) < 19:
+        if mode == "surface" and self.ship is not None and (px - self.game.ship_position[0]) ** 2 + (py - self.game.ship_position[1]) ** 2 + (pz - self.game.ship_position[2]) ** 2 < 361:
             prompt = "E / F board and launch your ship"
         elif self.nearby:
             prompt = f"E interact with {self.nearby['name']}"

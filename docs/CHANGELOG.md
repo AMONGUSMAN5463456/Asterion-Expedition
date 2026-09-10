@@ -2,6 +2,17 @@
 
 ## Performance
 
+- Mining beam reuses its flare quad and rebuilds line geometry only past a
+  2 cm movement gate instead of every frame while mining.
+- Player-effects colour updates are epsilon-gated and thrust bars update only
+  on visible state change (steady cruise now issues no redundant updates).
+- Broadphase collision queries cache per-cell order with a single-cell fast
+  path (adversarial stacked-box bench: -34% capsule moves, -20% sweeps).
+- Text truncation bisects the longest fitting prefix instead of removing one
+  character per measure (~780x on a 5.2 KB string); redundant panel resends
+  skip rebuild via compare-first (119 us down to 6 us).
+- Save serialization trims per-field lookups and writes UTF-8 bytes once
+  (20k-discovery to_dict -15%); orbit station colliders are cached per load.
 - Cached repeated HUD and menu text measurements, bounded to 1,024 entries per
   interface, without changing fonts, wrapping, update frequency, or graphics quality.
 - Reduced procedural mesh-transform overhead during chunk streaming by hoisting
@@ -37,6 +48,15 @@
 
 - Fixed saving after recovery from an excessively nested JSON save. The corrupt
   primary is now replaced without overwriting the previous valid backup.
+
+## Bugfixes
+
+- Fixed crash when marking a region depleted before the first world load, and
+  fixed overwritten buildings leaking their old scene node and colliders.
+- Mesh triangles with invalid caller-supplied normals (NaN, zero-length,
+  wrong count) now fall back to the computed face normal.
+- Mute-then-unmute restores loop sounds; the AO shader no longer normalizes
+  a degenerate zero cross product.
 
 # Version 1.1.0 — worlds in colour
 

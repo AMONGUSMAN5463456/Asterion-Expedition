@@ -9,6 +9,11 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+try:
+    from panda3d.core import Filename
+except ImportError:  # pragma: no cover - Panda3D is always present in-game
+    Filename = None
+
 
 def _bounded(value, default=0.0):
     try:
@@ -35,6 +40,10 @@ class AudioManager:
         self._effects = {}
         self._loops = {}
         self._levels = {"surface": 0.0, "space": 0.0, "engine": 0.0}
+        # Last per-loop volume (and engine pitch) pushed to the driver. At
+        # steady state update() skips redundant driver calls entirely.
+        self._applied = {}
+        self._pitch_applied = None
         self._clock = 0.0
         self._last_played = {}
         self._destroyed = False
@@ -52,8 +61,9 @@ class AudioManager:
                     path = root / (name + ".wav")
                     if not path.is_file():
                         continue
+                    if Filename is None:
+                        continue
                     # Filename.fromOsSpecific handles Windows drive letters as well.
-                    from panda3d.core import Filename
                     sound = app.loader.loadSfx(Filename.fromOsSpecific(str(path)))
                     if sound is None:
                         continue
@@ -117,36 +127,61 @@ class AudioManager:
             space_t = 0.0
         engine_t = (0.10 + 0.40 * thrust) if flying else 0.0
         fade = 1.0 - math.exp(-dt * 1.5)
+        if fade <= 0.0:
+            return
         levels = self._levels
+        applied = self._applied
+        volume = self.volume
+        dead = None
         try:
-            for name, sound in tuple(self._loops.items()):
-                try:
-                    if name == "surface":
-                        target = surface_t
-                    elif name == "space":
-                        target = space_t
-                    elif name == "engine":
-                        target = engine_t
-                    else:
-                        target = levels.get(name, 0.0)
-                    levels[name] += (target - levels[name]) * fade
-                    sound.setVolume(levels[name] * self.volume)
-                except Exception:
+            for name, sound in self._loops.items():
+                if name == "surface":
+                    target = surface_t
+                elif name == "space":
+                    target = space_t
+                elif name == "engine":
+                    target = engine_t
+                else:
+                    target = levels.get(name, 0.0)
+                level = levels.get(name, 0.0)
+                step = (target - level) * fade
+                if step:
+                    # Snap inaudible tails so the level converges in finite
+                    # steps instead of easing toward the target forever.
+                    level = target if abs(target - level) < 5e-4 else level + step
+                    levels[name] = level
+                gain = level * volume
+                if applied.get(name) != gain:
+                    try:
+                        sound.setVolume(gain)
+                    except Exception:
+                        if dead is None:
+                            dead = []
+                        dead.append(name)
+                        continue
+                    applied[name] = gain
+            if dead is not None:
+                for name in dead:
+                    sound = self._loops.pop(name, None)
+                    applied.pop(name, None)
                     self._failures += 1
                     try:
                         sound.stop()
                     except Exception:
                         pass
-                    self._loops.pop(name, None)
             engine = self._loops.get("engine")
             if engine is not None:
-                self._engine_pitch += (0.85 + thrust * 0.6 - self._engine_pitch) * fade
-                engine.setPlayRate(self._engine_pitch)
+                pitch = self._engine_pitch + (0.85 + thrust * 0.6 - self._engine_pitch) * fade
+                if abs(pitch - self._engine_pitch) < 1e-4:
+                    pitch = 0.85 + thrust * 0.6
+                self._engine_pitch = pitch
+                if self._pitch_applied != pitch:
+                    engine.setPlayRate(pitch)
+                    self._pitch_applied = pitch
         except Exception:
             self._failures += 1
             if self._failures > 3:
                 self._silence()
-
     def set_volume(self, value):
         self.volume = _bounded(value, self.volume)
         if self.volume <= 0:
@@ -156,7 +191,19 @@ class AudioManager:
             for name, sound in self._effects.items():
                 sound.setVolume(self.volume * self.EFFECTS[name][0])
             for name, sound in self._loops.items():
-                sound.setVolume(self.volume * self._levels[name])
+                gain = self.volume * self._levels[name]
+                sound.setVolume(gain)
+                self._applied[name] = gain
+            if (not self.enabled and not self._destroyed and self._failures <= 3
+                    and (self._effects or self._loops)):
+                # Muting stops the loop sounds; raising the volume again must
+                # restart them, otherwise the game stays silent until reload.
+                for sound in self._loops.values():
+                    try:
+                        sound.play()
+                    except Exception:
+                        self._failures += 1
+                self.enabled = True
         except Exception:
             self._failures += 1
             if self._failures > 3:

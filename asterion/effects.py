@@ -64,6 +64,16 @@ class PlayerEffects:
         self._emission_visible = False
         self._mode = None
         self._destroyed = False
+        # Last applied color/brightness values. setColorScale dirties Panda3D
+        # render state even when the value is unchanged, so per-frame updates
+        # below skip the call unless the value moved past a visible epsilon.
+        self._last_pulse = -1.0
+        self._last_crown = -1.0
+        self._last_scan_ring = -1.0
+        self._last_charge = -1.0
+        self._last_brightness = -1.0
+        self._last_indicator = None
+        self._last_thrust = None
         self._make_tool()
         self.tool.setScale(0.54)
         self._make_cockpit()
@@ -292,13 +302,21 @@ class PlayerEffects:
                              6.0 + recoil * 1.2 * motion, -4.0 + bob * 45.0)
             scan = self._scan
             pulse = 0.82 + scan * 0.12 + mining * (0.09 + 0.06 * sin(t * 16))
-            self.optics.setColorScale(pulse, pulse, pulse, 1)
+            if abs(pulse - self._last_pulse) >= 0.002:
+                self.optics.setColorScale(pulse, pulse, pulse, 1)
+                self._last_pulse = pulse
             self.crown.setR(t * (12.0 + 100.0 * scan))
-            self.crown.setColorScale(0.78 + scan * 0.22, 1, 1, 1)
+            if abs(scan - self._last_crown) >= 0.002:
+                self.crown.setColorScale(0.78 + scan * 0.22, 1, 1, 1)
+                self._last_crown = scan
             self.scan_ring.setR(-t * (20.0 + 60.0 * scan))
-            self.scan_ring.setColorScale(0.72 + scan * 0.28, 1, 1, 1)
+            if abs(scan - self._last_scan_ring) >= 0.002:
+                self.scan_ring.setColorScale(0.72 + scan * 0.28, 1, 1, 1)
+                self._last_scan_ring = scan
             charge = 0.75 + 0.25 * sin(t * 5.0 + 1.0)
-            self._charge_strip.setColorScale(charge, charge, charge, 1)
+            if abs(charge - self._last_charge) >= 0.002:
+                self._charge_strip.setColorScale(charge, charge, charge, 1)
+                self._last_charge = charge
             if mining > 0.03:
                 if not self._emission_visible:
                     self.emission.show()
@@ -313,18 +331,34 @@ class PlayerEffects:
             self.cockpit.setPos(sin(t * 29.0) * .0006 * intensity * motion, 0,
                                 sin(t * 37.0) * .0008 * intensity * motion)
             brightness = .92 + .04 * self._motion
-            self.instruments.setColorScale(brightness, brightness, brightness, 1)
+            if abs(brightness - self._last_brightness) >= 0.002:
+                self.instruments.setColorScale(brightness, brightness, brightness, 1)
+                self._last_brightness = brightness
             contact = self._contact
             indicator = _AMBER if braking or contact > .08 else _CYAN
-            self.indicators.setColorScale(indicator[0], indicator[1], indicator[2], 1)
+            if indicator != self._last_indicator:
+                self.indicators.setColorScale(indicator[0], indicator[1], indicator[2], 1)
+                self._last_indicator = indicator
             boost = self._boost > .3 or braking
-            thresh = self._motion * 8
-            amber = _AMBER
-            cyan = _CYAN
-            for index, node in self.thrust_segments:
-                strength = 1.0 if thresh > index else .12
+            # Thrust bars are binary per segment; the visible state is fully
+            # described by the lit-segment count and the amber/cyan flag.
+            # Count preserves the original `thresh > index` boundary exactly.
+            _thresh = self._motion * 8
+            lit = 0
+            for _i in range(8):
+                if _thresh > _i:
+                    lit += 1
+                else:
+                    break
+            thrust_key = (lit, bool(boost))
+            if thrust_key != self._last_thrust:
+                amber = _AMBER
+                cyan = _CYAN
                 color = amber if boost else cyan
-                node.setColorScale(color[0] * strength, color[1] * strength, color[2] * strength, 1)
+                for index, node in self.thrust_segments:
+                    strength = 1.0 if lit > index else .12
+                    node.setColorScale(color[0] * strength, color[1] * strength, color[2] * strength, 1)
+                self._last_thrust = thrust_key
 
     def destroy(self):
         if not self._destroyed:

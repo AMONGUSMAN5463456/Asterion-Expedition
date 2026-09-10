@@ -56,6 +56,25 @@ def mix(a, b, t):
             a[2] * s + b[2] * t,
             (a[3] if la > 3 else 1.0) * s + (b[3] if lb > 3 else 1.0) * t)
 
+def _valid_normals(normals):
+    """Exactly three finite, non-degenerate caller normals (kept bit-identical)."""
+    try:
+        items = tuple(normals)
+    except TypeError:
+        return False
+    if len(items) != 3:
+        return False
+    for n in items:
+        try:
+            nx, ny, nz = n
+        except (TypeError, ValueError):
+            return False
+        if not (math.isfinite(nx) and math.isfinite(ny) and math.isfinite(nz)):
+            return False
+        if nx * nx + ny * ny + nz * nz < 1e-16:
+            return False
+    return True
+
 
 class Mesh:
     """A small batched mesh builder with per-corner normals and colours."""
@@ -67,6 +86,11 @@ class Mesh:
         self.texcoords = []
 
     def tri(self, a, b, c, color, normals=None, colors=None, texcoords=None):
+        if normals is not None and not _valid_normals(normals):
+            # Non-finite or zero-length caller normals would bake NaNs into
+            # vertex data and flicker under lighting. Fall back to the face
+            # normal instead of trusting them.
+            normals = None
         if normals is None:
             abx, aby, abz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
             acx, acy, acz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
@@ -85,7 +109,6 @@ class Mesh:
             self.texcoords.extend(texcoords)
         elif self.texcoords:
             self.texcoords.extend(((0, 0),) * 3)
-
     def quad(self, a, b, c, d, color):
         self.tri(a, b, c, color)
         self.tri(a, c, d, color)

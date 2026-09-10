@@ -199,7 +199,9 @@ def _structure_shapes(kind):
     return shapes
 
 
+@lru_cache(maxsize=1)
 def _station_shapes():
+    # Shared, never mutated: _placed_shapes copies every entry per use.
     shapes=[_cylinder("core",(0,0,0),23,64),
             _cylinder("top",(0,0,41),15,18),_cylinder("bottom",(0,0,-41),15,18),
             _box("dock-spine",(0,-70,-12),(18,100,5)),
@@ -229,6 +231,7 @@ class WorldRenderer:
         self.state = None
         self.chunks = {}
         self._entities = {}
+        self._fauna = {}
         self._depleted = set()
         self._lights = []
         self._spinners = []
@@ -592,7 +595,8 @@ class WorldRenderer:
         water_level=planet["water_level"]
         remote=(cx%7==3 and cy%7==4 and abs(cx)+abs(cy)>4)
         rx,ry=(cx+.5)*CHUNK_SIZE,(cy+.5)*CHUNK_SIZE
-        remote=remote and height(rx,ry)>water_level+1
+        rz=height(rx,ry) if remote else 0.0
+        remote=remote and rz>water_level+1
         def clearance(x,y,padding=0):
             return self._in_clearance(x,y,padding) or (remote and math.hypot(x-rx,y-ry)<14+padding)
         decor=Mesh()
@@ -655,7 +659,7 @@ class WorldRenderer:
             landmark=NodePath("remote-"+kind)
             yield from meshes[0]._node_steps("structure",landmark,two_sided=True)
             yield from meshes[1]._node_steps("signal-lights",landmark,two_sided=True,unlit=True)
-            z=height(rx,ry)
+            z=rz
             landmark.setPos(rx,ry,z)
             landmark.reparentTo(node)
             landmark.setH((_seed(self._seed_value,cx,cy)%4)*90)
@@ -1038,6 +1042,7 @@ class WorldRenderer:
     def _make_asteroids(self,system):
         rng=random.Random(8011+int(system["id"])*1009)
         # A broad field, plus a visible nearby pocket of fuel-bearing stones.
+        station_pos=tuple(system["station"])
         for i in range(95):
             entity_id=f"s{system['id']}:asteroid:{i}"
             a=rng.uniform(0,math.tau)
@@ -1046,7 +1051,7 @@ class WorldRenderer:
             z=rng.uniform(-320,440)
             if i<7:
                 x,y,z=rng.uniform(-120,180),rng.uniform(210,520),rng.uniform(-90,110)
-            if (Vec3(x,y,z)-Vec3(*system["station"])).length()<210:
+            if math.dist((x,y,z),station_pos)<210:
                 continue
             radius=rng.uniform(6,22)
             resource=("ferrite","gold","cobalt","crystal")[i%4]
@@ -1092,12 +1097,21 @@ class WorldRenderer:
         solid.node(kind+"-structure",node,two_sided=True)
         glow.node(kind+"-indicators",node,two_sided=True,unlit=True)
         pos=_xyz(record.get("pos",(0,0,20)))
-        node.setPos(pos[0],pos[1],self.height(pos[0],pos[1]))
+        ground=self.height(pos[0],pos[1])
+        node.setPos(pos[0],pos[1],ground)
         node.setH(_finite(record.get("heading",0)))
+        # A building id reusing a live entity id replaces it: drop the old
+        # node and colliders instead of leaking them under the new entry.
+        old=self._entities.pop(entity_id,None)
+        if old is not None:
+            self._fauna.pop(entity_id,None)
+            self.collisions.remove_group(entity_id)
+            if not old["node"].isEmpty():
+                old["node"].removeNode()
         self._buildings[entity_id]=node
         self._entities[entity_id]=dict(id=entity_id,kind="beacon",building_kind=kind,
             name={"beacon":"Expedition beacon","habitat":"Field habitat","solar":"Solar array", "extractor":"Mineral extractor"}.get(kind,kind),
-            pos=(pos[0],pos[1],self.height(pos[0],pos[1])+1.3),radius=3 if kind!="habitat" else 4,node=node)
+            pos=(pos[0],pos[1],ground+1.3),radius=3 if kind!="habitat" else 4,node=node)
         self.collisions.set_group(entity_id,_placed_shapes(_structure_shapes(kind),entity_id,
             (pos[0],pos[1],node.getZ()),node.getH()))
 
@@ -1226,6 +1240,7 @@ class WorldRenderer:
         self.chunks={}
         self._entities={}
         self._fauna={}
+        self._depleted=set()
         self._spinners=[]
         self._buildings={}
         self._chunk_queue=[]

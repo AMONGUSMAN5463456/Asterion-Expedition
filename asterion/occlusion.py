@@ -47,7 +47,14 @@ void main() {
     vec3 up = position(uv + vec2(0, pixel.y)) - p;
     vec3 dx = dot(left, left) < dot(right, right) ? left : right;
     vec3 dy = dot(down, down) < dot(up, up) ? down : up;
-    vec3 normal = normalize(cross(dx, dy));
+    vec3 bent = cross(dx, dy);
+    if (dot(bent, bent) < 1e-20) {
+        // Identical neighbour positions (flat-on pixels at extreme range):
+        // normalizing this would be undefined and speckle NaNs into the AO.
+        result = vec4(1.0);
+        return;
+    }
+    vec3 normal = normalize(bent);
     if (dot(normal, -p) < 0.0) normal = -normal;
     if (texture(depth, uv * viewport_size / vec2(textureSize(depth, 0))).r >= 0.99999 || length(p) > 120.0) {
         result = vec4(1.0);
