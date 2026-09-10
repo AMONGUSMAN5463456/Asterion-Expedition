@@ -13,6 +13,9 @@
 
 ## Graphics
 
+- Fixed ambient occlusion reconstructing surface positions incorrectly, which
+  added false shading bands on smooth ground and bright unshaded rims around
+  objects when looking down from a raised viewpoint.
 - Added optional screen-space ambient occlusion for surface contact shading,
   with a saved, immediate on/off control in Settings.
 - Kept existing material colours and HUD rendering unchanged. AO is disabled

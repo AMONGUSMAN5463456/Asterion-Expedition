@@ -55,6 +55,20 @@ It does not replace scene material shaders or process the 2D HUD. Texture
 padding and lens changes are handled by the effect; Panda3D's filter manager
 resizes its render targets with the window.
 
+Positions are rebuilt from the lens field of view and depth planes rather than
+by multiplying with an inverse projection matrix. A shader-input matrix reaches
+GLSL in the opposite order from Panda3D's own matrix convention, so the former
+reconstruction returned unusable positions and shaded the wrong pixels: on a
+surface view from about seven metres up and pitched down, smooth ground gained
+false horizontal shading bands and objects gained bright unshaded rims. The
+lens parameters are plain float shader inputs and carry no such ambiguity.
+
+A headless GL check confirms the reconstruction: at seven metres above level
+ground, pitched down 45 degrees, the centre of the screen reconstructs the
+ground at 9.9 metres, and neighbouring rows follow the expected distances.
+With the fix, enabling occlusion on flat open ground leaves the frame unchanged,
+and tight contacts still darken (measured at the base of a landing-pad deposit).
+
 TinyDisplay runs without AO. Render-target or shader setup failure also leaves
 normal rendering active and marks the setting unavailable for that session.
 As a screen-space effect, AO cannot shade against geometry outside the camera

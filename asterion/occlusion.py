@@ -16,13 +16,21 @@ void main() {
 _POSITION = """
 uniform sampler2D depth;
 uniform vec2 viewport_size;
-uniform mat4 inverse_projection;
+uniform vec2 view_ray;      // One over the tangent of half the horizontal, vertical field of view.
+uniform vec2 depth_range;   // Camera near and far planes.
 vec3 position(vec2 coord) {
     vec2 pixel = 1.0 / viewport_size;
+    vec2 scale = viewport_size / vec2(textureSize(depth, 0));
     coord = clamp(coord, pixel * 0.5, 1.0 - pixel * 0.5);
-    float z = texture(depth, coord * viewport_size / vec2(textureSize(depth, 0))).r;
-    vec4 p = inverse_projection * vec4(coord * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
-    return p.xyz / p.w;
+    float z = texture(depth, coord * scale).r;
+    // Perspective reconstruction from the lens parameters. Doing it without a
+    // matrix avoids Panda3D's row-first/column-first shader input mismatch,
+    // which produced unusable positions and false shading.
+    float ndc_z = z * 2.0 - 1.0;
+    float forward = 2.0 * depth_range.x * depth_range.y /
+                    (depth_range.x + depth_range.y - ndc_z * (depth_range.y - depth_range.x));
+    vec2 ndc = coord * 2.0 - 1.0;
+    return vec3(ndc.x * forward / view_ray.x, forward, ndc.y * forward / view_ray.y);
 }
 """
 _OCCLUSION = """#version 130
@@ -138,10 +146,11 @@ class AmbientOcclusion:
         projection = self.lens.getProjectionMat()
         if self.projection != projection:
             self.projection = Mat4(projection)
-            inverse = Mat4()
-            inverse.invertFrom(projection)
+            # Scale factors and planes come straight from the lens so the
+            # shader never depends on a matrix layout.
             for quad in self.quads:
-                quad.setShaderInput("inverse_projection", inverse)
+                quad.setShaderInput("view_ray", projection.getCell(0, 0), projection.getCell(2, 1))
+                quad.setShaderInput("depth_range", self.lens.getNear(), self.lens.getFar())
 
     def cleanup(self):
         self.manager.cleanup()
