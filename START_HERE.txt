@@ -1,0 +1,30 @@
+ASTERION EXPEDITION 1.1.0
+An original, offline 3D space-exploration game.
+
+1. Extract this entire ZIP into a writable folder.
+2. Install 64-bit Python 3.10 to 3.14 if needed (Python 3.12 recommended).
+3. Mac: double-click Start-Mac.command.
+   Windows: double-click Start-Windows.bat.
+   Linux: run sh Start-Linux.sh.
+
+Mac alternative: open Terminal in this folder and run:
+    python3 bootstrap.py
+
+First launch installs Panda3D into a private environment beside the game.
+Internet is needed for that installation. Later launches and gameplay are offline.
+This is a source distribution; Python and a prebuilt game application are not included.
+
+Choose BEGIN EXPEDITION. H opens the field guide in the game.
+WASD moves, mouse looks, C scans, hold left mouse to mine.
+Tap Space to jump; hold it for jetpack. Ctrl brakes in the air;
+Space + Ctrl hovers. Settings adjusts FOV, camera motion and flight assist.
+E or F boards your ship; Space climbs. At 420 m you enter orbit.
+M opens navigation, K crafting, I cargo, J the journal, B construction.
+Esc pauses and offers free rescue if needed. F5 saves.
+
+README.md has setup help, controls, save locations, and current limitations.
+docs/FIELD_GUIDE.md explains the first expedition step by step.
+docs/REFERENCE.md lists all materials, recipes, buildings, and biomes.
+docs/TEST_REPORT.md records testing and its limits.
+docs/CHANGELOG.md describes the new graphics, collision and movement.
+docs/screenshots contains actual rendered game images.
