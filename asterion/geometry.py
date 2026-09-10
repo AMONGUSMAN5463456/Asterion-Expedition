@@ -19,7 +19,7 @@ TAU = math.tau
 def rgba(color, alpha=1.0):
     if len(color) < 3:
         raise ValueError("color sequence must have at least 3 components")
-    return tuple(color[:3]) + (color[3] if len(color) > 3 else alpha,)
+    return (color[0], color[1], color[2], color[3] if len(color) > 3 else alpha)
 
 
 def shade(color, factor):
@@ -27,7 +27,20 @@ def shade(color, factor):
         raise ValueError("color sequence must have at least 3 components")
     if not math.isfinite(factor):
         factor = 1.0
-    return tuple(max(0.0, min(1.0, c * factor)) for c in color[:3]) + (rgba(color)[3],)
+    r, g, b = color[0] * factor, color[1] * factor, color[2] * factor
+    if r > 1.0 or r != r:
+        r = 1.0
+    elif r < 0.0:
+        r = 0.0
+    if g > 1.0 or g != g:
+        g = 1.0
+    elif g < 0.0:
+        g = 0.0
+    if b > 1.0 or b != b:
+        b = 1.0
+    elif b < 0.0:
+        b = 0.0
+    return (r, g, b, color[3] if len(color) > 3 else 1.0)
 
 
 def mix(a, b, t):
@@ -37,8 +50,11 @@ def mix(a, b, t):
         t = 0.0
     else:
         t = max(0.0, min(1.0, t))
-    aa, bb = rgba(a), rgba(b)
-    return tuple(aa[i] * (1.0 - t) + bb[i] * t for i in range(4))
+    s = 1.0 - t
+    la, lb = len(a), len(b)
+    return (a[0] * s + b[0] * t, a[1] * s + b[1] * t,
+            a[2] * s + b[2] * t,
+            (a[3] if la > 3 else 1.0) * s + (b[3] if lb > 3 else 1.0) * t)
 
 
 class Mesh:
@@ -52,11 +68,14 @@ class Mesh:
 
     def tri(self, a, b, c, color, normals=None, colors=None, texcoords=None):
         if normals is None:
-            normal = (Vec3(*b) - Vec3(*a)).cross(Vec3(*c) - Vec3(*a))
-            if normal.lengthSquared() < 1e-16:
+            abx, aby, abz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+            acx, acy, acz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+            nx, ny, nz = aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx
+            length2 = nx * nx + ny * ny + nz * nz
+            if length2 < 1e-16:
                 return
-            normal.normalize()
-            normals = (tuple(normal),) * 3
+            length = math.sqrt(length2)
+            normals = ((nx / length, ny / length, nz / length),) * 3
         self.vertices.extend((tuple(a), tuple(b), tuple(c)))
         self.normals.extend(normals)
         self.colors.extend(tuple(map(rgba, colors)) if colors else (rgba(color),) * 3)
@@ -94,10 +113,12 @@ class Mesh:
         v = axis.cross(u)
         end_radius = radius if end_radius is None else end_radius
         lower, upper = [], []
+        cos, sin = math.cos, math.sin
         for i in range(sides):
-            radial = u * math.cos(TAU*i/sides) + v * math.sin(TAU*i/sides)
-            lower.append(tuple(a + radial*radius))
-            upper.append(tuple(b + radial*end_radius))
+            angle = TAU * i / sides
+            radial = u * cos(angle) + v * sin(angle)
+            lower.append(tuple(a + radial * radius))
+            upper.append(tuple(b + radial * end_radius))
         for i in range(sides):
             j = (i + 1) % sides
             col = shade(color, .87 + .15 * math.sin(i*2.31 + .8))
@@ -110,20 +131,28 @@ class Mesh:
                seed=0, color_fn=None, smooth=False, textured=False):
         """Ellipsoid; optional deterministic radial variation gives natural rocks."""
         rng = random.Random(seed)
+        rand, cos, sin = rng.random, math.cos, math.sin
+        shade_local = shade
+        cx, cy, cz = center
+        sx, sy, sz = size
+        half_pi, pi = math.pi * 0.5, math.pi
         grid = []
         for j in range(rings + 1):
-            lat = -math.pi*.5 + math.pi*j/rings
+            lat = -half_pi + pi * j / rings
+            cla, sla = cos(lat), sin(lat)
             pole = (j == 0 or j == rings)
             # One shared radius per pole row: independent offsets per segment
             # would splay the pole into a pinhole fan.
-            pole_r = 1 + roughness*(rng.random() - .5) if pole else 1.0
+            pole_r = 1 + roughness * (rand() - .5) if pole else 1.0
             row = []
             for i in range(segments + 1):
-                lon = TAU*(i % segments)/segments
-                n = (math.cos(lat)*math.cos(lon), math.cos(lat)*math.sin(lon), math.sin(lat))
-                r = pole_r if pole else 1 + roughness*(rng.random() - .5)
-                point = tuple(center[k] + n[k]*size[k]*r for k in range(3))
-                col = color_fn(n) if color_fn else shade(color, .92 + rng.random()*.14)
+                lon = TAU * (i % segments) / segments
+                clon, slon = cos(lon), sin(lon)
+                nx, ny, nz = cla * clon, cla * slon, sla
+                n = (nx, ny, nz)
+                r = pole_r if pole else 1 + roughness * (rand() - .5)
+                point = (cx + nx * sx * r, cy + ny * sy * r, cz + nz * sz * r)
+                col = color_fn(n) if color_fn else shade_local(color, .92 + rand() * .14)
                 row.append((point, n, col))
             row[-1] = row[0]
             grid.append(row)
@@ -141,13 +170,16 @@ class Mesh:
     def ring(self, center, inner, outer, color, segments=64, tilt=0):
         x, y, z = center
         ca, sa = math.cos(math.radians(tilt)), math.sin(math.radians(tilt))
+        cos, sin, shade_local = math.cos, math.sin, shade
         for i in range(segments):
-            a, b = i*TAU/segments, (i+1)*TAU/segments
-            def p(radius, angle):
-                yy = radius*math.sin(angle)
-                return (x + radius*math.cos(angle), y + yy*ca, z + yy*sa)
-            self.quad(p(inner,a), p(outer,a), p(outer,b), p(inner,b),
-                      shade(color, .93 + .07*math.sin(i*.38)))
+            aa, ab = TAU * i / segments, TAU * (i + 1) / segments
+            caa, saa, cab, sab = cos(aa), sin(aa), cos(ab), sin(ab)
+            yia, yib, yoa, yob = inner * saa, inner * sab, outer * saa, outer * sab
+            self.quad((x + inner * caa, y + yia * ca, z + yia * sa),
+                      (x + outer * caa, y + yoa * ca, z + yoa * sa),
+                      (x + outer * cab, y + yob * ca, z + yob * sa),
+                      (x + inner * cab, y + yib * ca, z + yib * sa),
+                      shade_local(color, .93 + .07 * math.sin(i * .38)))
 
     def prism(self, points, bottom, top, color):
         """Extrude a counterclockwise polygon in the XY plane."""
@@ -175,14 +207,15 @@ class Mesh:
             self.texcoords.extend(((0,0),)*len(self.vertices))
         if self.texcoords or other.texcoords:
             self.texcoords.extend(other.texcoords or ((0,0),)*len(other.vertices))
+        verts, norms, cols = self.vertices, self.normals, self.colors
         for p, n, color in zip(other.vertices, other.normals, other.colors):
-            x, y, z = p[0]*sx, p[1]*sy, p[2]*sz
-            self.vertices.append((px+x*ca-y*sa, py+x*sa+y*ca, pz+z))
-            nx, ny, nz = n[0]/nsx, n[1]/nsy, n[2]/nsz
-            normal.set(nx*ca-ny*sa, nx*sa+ny*ca, nz)
+            x, y, z = p[0] * sx, p[1] * sy, p[2] * sz
+            verts.append((px + x * ca - y * sa, py + x * sa + y * ca, pz + z))
+            nx, ny, nz = n[0] / nsx, n[1] / nsy, n[2] / nsz
+            normal.set(nx * ca - ny * sa, nx * sa + ny * ca, nz)
             normal.normalize()
-            self.normals.append(tuple(normal))
-            self.colors.append(color)
+            norms.append(tuple(normal))
+            cols.append(color)
 
     def node(self, name="mesh", parent=None, two_sided=False, unlit=False):
         steps = self._node_steps(name, parent, two_sided, unlit)

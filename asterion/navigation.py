@@ -45,12 +45,16 @@ def _subtract(a, b):
 
 
 def _distance(a, b):
-    return math.dist(a, b)
+    dx, dy, dz = a[0] - b[0], a[1] - b[1], a[2] - b[2]
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
 def _unit(vector):
-    length = math.hypot(*vector)
-    return tuple(n / length for n in vector) if length else (1.0, 0.0, 0.0)
+    x, y, z = vector
+    length = math.sqrt(x * x + y * y + z * z)
+    if not length:
+        return (1.0, 0.0, 0.0)
+    return (x / length, y / length, z / length)
 
 
 def _cross(a, b):
@@ -61,13 +65,27 @@ def _cross(a, b):
 def _intersects(a, b, sphere):
     """Exact closest-point test, with only double-precision contact tolerance."""
     x, y, z, radius = sphere
+    a0, a1, a2 = a
+    b0, b1, b2 = b
     # Most orbital bodies miss even the segment's axis-aligned bounds.
-    if (x + radius < min(a[0], b[0]) or x - radius > max(a[0], b[0]) or
-            y + radius < min(a[1], b[1]) or y - radius > max(a[1], b[1]) or
-            z + radius < min(a[2], b[2]) or z - radius > max(a[2], b[2])):
+    if a0 < b0:
+        lo0, hi0 = a0, b0
+    else:
+        lo0, hi0 = b0, a0
+    if a1 < b1:
+        lo1, hi1 = a1, b1
+    else:
+        lo1, hi1 = b1, a1
+    if a2 < b2:
+        lo2, hi2 = a2, b2
+    else:
+        lo2, hi2 = b2, a2
+    if (x + radius < lo0 or x - radius > hi0 or
+            y + radius < lo1 or y - radius > hi1 or
+            z + radius < lo2 or z - radius > hi2):
         return False
-    dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
-    ox, oy, oz = x - a[0], y - a[1], z - a[2]
+    dx, dy, dz = b0 - a0, b1 - a1, b2 - a2
+    ox, oy, oz = x - a0, y - a1, z - a2
     length2 = dx*dx + dy*dy + dz*dz
     fraction = max(0.0, min(1.0, (ox*dx + oy*dy + oz*dz) / length2)) if length2 else 0.0
     ox, oy, oz = ox - fraction*dx, oy - fraction*dy, oz - fraction*dz
@@ -93,6 +111,7 @@ class _Search:
         self.spheres = spheres
         self.edges = {}
         self.blockers = {}
+        self._dist = {}
         self.forward = _unit(_subtract(goal, start))
         axis = min(range(3), key=lambda i: abs(self.forward[i]))
         reference = tuple(1.0 if i == axis else 0.0 for i in range(3))
@@ -103,8 +122,18 @@ class _Search:
         if index is not None:
             self.blockers[index] = self.blockers.get(index, 0) + 1
 
+    def _leg(self, a, b):
+        key = (a, b) if a <= b else (b, a)
+        distance = self._dist.get(key)
+        if distance is None:
+            na, nb = self.nodes[a], self.nodes[b]
+            dx, dy, dz = na[0] - nb[0], na[1] - nb[1], na[2] - nb[2]
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            self._dist[key] = distance
+        return distance
+
     def edge_clear(self, a, b):
-        key = (min(a, b), max(a, b))
+        key = (a, b) if a <= b else (b, a)
         if key not in self.edges:
             if len(self.edges) >= _MAX_EDGES:
                 raise _BudgetExhausted
@@ -121,25 +150,34 @@ class _Search:
         when the regular sample directions are poorly aligned with it.
         """
         center, radius = sphere[:3], sphere[3]
-        reach = radius * 1.25 + max(.001, max(abs(n) for n in center) * 2e-6)
-        directions = [_unit(_subtract(self.nodes[i], center)) for i in (0, 1)]
+        cx, cy, cz = center
+        reach = radius * 1.25 + max(.001, max(abs(cx), abs(cy), abs(cz)) * 2e-6)
+        nodes = self.nodes
+        forward, side, up = self.forward, self.side, self.up
+        f0, f1, f2 = forward
+        s0, s1, s2 = side
+        u0, u1, u2 = up
+        directions = [_unit(_subtract(nodes[i], center)) for i in (0, 1)]
         for x, y, z in _SHELL_DIRECTIONS:
-            directions.append(tuple(x*self.forward[i] + y*self.side[i] + z*self.up[i]
-                                    for i in range(3)))
+            directions.append((x * f0 + y * s0 + z * u0,
+                               x * f1 + y * s1 + z * u1,
+                               x * f2 + y * s2 + z * u2))
+        node_keys = self.node_keys
         for direction in directions:
-            if len(self.nodes) >= _MAX_NODES:
+            if len(nodes) >= _MAX_NODES:
                 break
+            dx, dy, dz = direction
             # Check the coordinates the controller will actually receive.
             try:
-                node = _point(Vec3(*(center[i] + direction[i]*reach for i in range(3))))
+                node = _point(Vec3(cx + dx * reach, cy + dy * reach, cz + dz * reach))
             except (ValueError, OverflowError):
                 continue
-            if node in self.node_keys:
+            if node in node_keys:
                 continue
             hit = _blocker(node, node, self.spheres)
             if hit is None:
-                self.node_keys.add(node)
-                self.nodes.append(node)
+                node_keys.add(node)
+                nodes.append(node)
             else:
                 self._record_blocker(hit)
 
@@ -148,28 +186,30 @@ class _Search:
         costs = {0: 0.0}
         parents = {}
         closed = set()
-        pending = [(_distance(self.nodes[0], self.nodes[1]), 0.0, 0)]
+        leg = self._leg
+        edge_clear = self.edge_clear
+        node_count = len(self.nodes)
+        pending = [(leg(0, 1), 0.0, 0)]
         while pending:
             _, cost, current = heappop(pending)
             if current in closed or cost != costs[current]:
                 continue
-            if self.edge_clear(current, 1):
+            if edge_clear(current, 1):
                 path = [1, current]
                 while path[-1] != 0:
                     path.append(parents[path[-1]])
                 return list(reversed(path))
             closed.add(current)
-            for other in range(2, len(self.nodes)):
+            for other in range(2, node_count):
                 if other in closed:
                     continue
-                new_cost = cost + _distance(self.nodes[current], self.nodes[other])
+                new_cost = cost + leg(current, other)
                 if new_cost >= costs.get(other, math.inf):
                     continue
-                if self.edge_clear(current, other):
+                if edge_clear(current, other):
                     costs[other] = new_cost
                     parents[other] = current
-                    estimate = new_cost + _distance(self.nodes[other], self.nodes[1])
-                    heappush(pending, (estimate, new_cost, other))
+                    heappush(pending, (new_cost + leg(other, 1), new_cost, other))
         return []
 
     def finish(self, path):

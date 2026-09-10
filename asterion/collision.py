@@ -35,6 +35,8 @@ _MAX_SWEEPS = 10
 _MAX_RECOVERY = 24
 _MAX_ADVANCE = 64
 _ZERO = (0.0, 0.0, 0.0)
+_sqrt = math.sqrt
+_hypot = math.hypot
 
 
 @dataclass(slots=True)
@@ -141,45 +143,60 @@ def _ignored(ignore):
 
 
 def _bounds_overlap(low, high, other_low, other_high):
-    return all(low[i] <= other_high[i] and high[i] >= other_low[i]
-               for i in range(3))
+    return (low[0] <= other_high[0] and high[0] >= other_low[0]
+            and low[1] <= other_high[1] and high[1] >= other_low[1]
+            and low[2] <= other_high[2] and high[2] >= other_low[2])
 
 
 def _interval(origin, delta, low, high):
     """Closed ray segment/slab interval, including parallel boundary rays."""
     start, end = 0.0, 1.0
-    for axis in range(3):
-        if abs(delta[axis]) <= _EPS:
-            if origin[axis] < low[axis] or origin[axis] > high[axis]:
+    o0, o1, o2 = origin
+    d0, d1, d2 = delta
+    for o, d, lo, hi in ((o0, d0, low[0], high[0]),
+                         (o1, d1, low[1], high[1]),
+                         (o2, d2, low[2], high[2])):
+        if -_EPS <= d <= _EPS:
+            if o < lo or o > hi:
                 return None
             continue
-        near = (low[axis] - origin[axis]) / delta[axis]
-        far = (high[axis] - origin[axis]) / delta[axis]
+        near = (lo - o) / d
+        far = (hi - o) / d
         if near > far:
             near, far = far, near
-        start, end = max(start, near), min(end, far)
+        if near > start:
+            start = near
+        if far < end:
+            end = far
         if start > end:
             return None
     return start, end
 
-
 def _distance(shape, point, radius, segment):
     """Signed gap and unit outward normal for the configuration obstacle."""
-    dx, dy, dz = _sub(point, shape.center)
+    center = shape.center
+    dx, dy, dz = point[0] - center[0], point[1] - center[1], point[2] - center[2]
     if shape.kind == "sphere":
         z = dz - min(segment, max(-segment, dz))
-        length = math.sqrt(dx * dx + dy * dy + z * z)
-        normal = (dx / length, dy / length, z / length) if length > _EPS else (1., 0., 0.)
+        length = _sqrt(dx * dx + dy * dy + z * z)
+        if length > _EPS:
+            normal = (dx / length, dy / length, z / length)
+        else:
+            normal = (1., 0., 0.)
         return length - shape.radius - radius, normal
 
     if shape.kind == "cylinder":
-        radial = math.hypot(dx, dy)
+        radial = _hypot(dx, dy)
         side = radial - shape.radius
         top = abs(dz) - shape.half[2] - segment
-        nx, ny = (dx / radial, dy / radial) if radial > _EPS else (1., 0.)
+        if radial > _EPS:
+            nx, ny = dx / radial, dy / radial
+        else:
+            nx, ny = 1., 0.
         if side > 0.0 or top > 0.0:
-            out_side, out_top = max(0.0, side), max(0.0, top)
-            length = math.hypot(out_side, out_top)
+            out_side = side if side > 0.0 else 0.0
+            out_top = top if top > 0.0 else 0.0
+            length = _hypot(out_side, out_top)
             return (length - radius,
                     (nx * out_side / length, ny * out_side / length,
                      _sign(dz) * out_top / length))
@@ -188,40 +205,52 @@ def _distance(shape, point, radius, segment):
         return side - radius, (nx, ny, 0.)
 
     # Inverse Panda heading: local +Y at heading +90 is world -X.
-    x = shape.cosine * dx + shape.sine * dy
-    y = -shape.sine * dx + shape.cosine * dy
-    local = (x, y, dz)
-    q = (abs(x) - shape.half[0], abs(y) - shape.half[1],
-         abs(dz) - shape.half[2] - segment)
-    outside = tuple(max(0.0, value) for value in q)
-    length = math.sqrt(_dot(outside, outside))
+    cosine, sine = shape.cosine, shape.sine
+    x = cosine * dx + sine * dy
+    y = -sine * dx + cosine * dy
+    half = shape.half
+    q0, q1, q2 = abs(x) - half[0], abs(y) - half[1], abs(dz) - half[2] - segment
+    o0 = q0 if q0 > 0.0 else 0.0
+    o1 = q1 if q1 > 0.0 else 0.0
+    o2 = q2 if q2 > 0.0 else 0.0
+    length = _sqrt(o0 * o0 + o1 * o1 + o2 * o2)
     if length > _EPS:
-        normal = tuple(_sign(local[i]) * outside[i] / length for i in range(3))
+        normal = (_sign(x) * o0 / length, _sign(y) * o1 / length, _sign(dz) * o2 / length)
         gap = length - radius
     else:
         # Prefer Z for exact ties so coplanar roof/floor support is stable.
-        axis = max(range(3), key=lambda i: (q[i], i))
-        normal = tuple(_sign(local[i]) if i == axis else 0.0 for i in range(3))
-        gap = q[axis] - radius
-    return gap, (shape.cosine * normal[0] - shape.sine * normal[1],
-                 shape.sine * normal[0] + shape.cosine * normal[1], normal[2])
+        if q2 >= q1 and q2 >= q0:
+            normal, gap = (0.0, 0.0, _sign(dz)), q2 - radius
+        elif q1 >= q0:
+            normal, gap = (0.0, _sign(y), 0.0), q1 - radius
+        else:
+            normal, gap = (_sign(x), 0.0, 0.0), q0 - radius
+    return gap, (cosine * normal[0] - sine * normal[1],
+                 sine * normal[0] + cosine * normal[1], normal[2])
+
 
 
 def _cast_shape(shape, point, delta, radius, segment, skin=_SKIN,
                 ray=False):
     extent = (radius + skin, radius + skin, radius + segment + skin)
-    interval = _interval(point, delta, _sub(shape.low, extent), _add(shape.high, extent))
+    slow, shigh = shape.low, shape.high
+    interval = _interval(point, delta,
+                         (slow[0] - extent[0], slow[1] - extent[1], slow[2] - extent[2]),
+                         (shigh[0] + extent[0], shigh[1] + extent[1], shigh[2] + extent[2]))
     if interval is None:
         return None
     fraction, end = interval
+    px, py, pz = point
+    dx, dy, dz = delta
+    shape_id = shape.id
     for _ in range(_MAX_ADVANCE):
-        current = _add(point, _mul(delta, fraction))
+        current = (px + dx * fraction, py + dy * fraction, pz + dz * fraction)
         distance, normal = _distance(shape, current, radius, segment)
         gap = distance - skin
-        closing = -_dot(delta, normal)
+        closing = -(dx * normal[0] + dy * normal[1] + dz * normal[2])
         if gap <= 1e-7:
             if ray or closing > _EPS:
-                return _Hit(max(0.0, min(1.0, fraction)), normal, shape.id)
+                return _Hit(max(0.0, min(1.0, fraction)), normal, shape_id)
             return None
         if closing <= _EPS:
             # Distance to a convex body cannot start decreasing again along
@@ -229,14 +258,14 @@ def _cast_shape(shape, point, delta, radius, segment, skin=_SKIN,
             return None
         advance = gap / closing
         if fraction + advance > end:
-            current = _add(point, _mul(delta, end))
+            current = (px + dx * end, py + dy * end, pz + dz * end)
             distance, normal = _distance(shape, current, radius, segment)
-            if distance - skin <= 1e-7 and (ray or -_dot(delta, normal) > _EPS):
-                return _Hit(max(0.0, min(1.0, end)), normal, shape.id)
+            if distance - skin <= 1e-7 and (ray or -(dx * normal[0] + dy * normal[1] + dz * normal[2]) > _EPS):
+                return _Hit(max(0.0, min(1.0, end)), normal, shape_id)
             return None
         fraction = min(end, fraction + advance)
     # A pathological grazing contact is conservatively blocked, never skipped.
-    return _Hit(max(0.0, min(1.0, fraction)), normal, shape.id)
+    return _Hit(max(0.0, min(1.0, fraction)), normal, shape_id)
 
 
 def _append_contact(normals, ids, normal, shape_id):
@@ -252,28 +281,53 @@ def _project(delta, normals):
     In 3D the optimum lies on zero, one, two, or three contact planes.  Testing
     those subspaces avoids repeated projection oscillating in acute corners.
     """
-    def allowed(candidate):
-        return all(_dot(candidate, n) >= -1e-8 for n in normals)
-
-    if allowed(delta):
+    count = len(normals)
+    if count == 0:
         return delta
-    best, best_error = _ZERO, _dot(delta, delta)
-    for i, normal in enumerate(normals):
-        candidate = _sub(delta, _mul(normal, _dot(delta, normal)))
-        if allowed(candidate):
-            error = _dot(_sub(candidate, delta), _sub(candidate, delta))
+    dx, dy, dz = delta
+    feasible = True
+    for n in normals:
+        if dx * n[0] + dy * n[1] + dz * n[2] < -1e-8:
+            feasible = False
+            break
+    if feasible:
+        return delta
+    best, best_error = _ZERO, dx * dx + dy * dy + dz * dz
+    for i in range(count):
+        normal = normals[i]
+        nx, ny, nz = normal
+        along = dx * nx + dy * ny + dz * nz
+        cx, cy, cz = dx - nx * along, dy - ny * along, dz - nz * along
+        ok = True
+        for n in normals:
+            if cx * n[0] + cy * n[1] + cz * n[2] < -1e-8:
+                ok = False
+                break
+        if ok:
+            ex, ey, ez = cx - dx, cy - dy, cz - dz
+            error = ex * ex + ey * ey + ez * ez
             if error < best_error:
-                best, best_error = candidate, error
-        for other in normals[:i]:
-            crease = _cross(normal, other)
-            length_sq = _dot(crease, crease)
+                best, best_error = (cx, cy, cz), error
+        for j in range(i):
+            other = normals[j]
+            ox, oy, oz = other
+            # _cross(normal, other) inlined for the crease direction.
+            rx, ry, rz = ny * oz - nz * oy, nz * ox - nx * oz, nx * oy - ny * ox
+            length_sq = rx * rx + ry * ry + rz * rz
             if length_sq <= 1e-10:
                 continue
-            candidate = _mul(crease, _dot(delta, crease) / length_sq)
-            if allowed(candidate):
-                error = _dot(_sub(candidate, delta), _sub(candidate, delta))
+            scale = (dx * rx + dy * ry + dz * rz) / length_sq
+            cx, cy, cz = rx * scale, ry * scale, rz * scale
+            ok = True
+            for n in normals:
+                if cx * n[0] + cy * n[1] + cz * n[2] < -1e-8:
+                    ok = False
+                    break
+            if ok:
+                ex, ey, ez = cx - dx, cy - dy, cz - dz
+                error = ex * ex + ey * ey + ez * ez
                 if error < best_error:
-                    best, best_error = candidate, error
+                    best, best_error = (cx, cy, cz), error
     return best
 
 
@@ -300,15 +354,16 @@ class CollisionWorld:
         return len(self._shapes)
 
     def _cell_range(self, low, high, limit):
-        first = tuple(math.floor(x / self.cell_size) for x in low)
-        last = tuple(math.floor(x / self.cell_size) for x in high)
-        count = math.prod(last[i] - first[i] + 1 for i in range(3))
-        if count > limit:
+        cell_size = self.cell_size
+        floor = math.floor
+        x0, y0, z0 = floor(low[0] / cell_size), floor(low[1] / cell_size), floor(low[2] / cell_size)
+        x1, y1, z1 = floor(high[0] / cell_size), floor(high[1] / cell_size), floor(high[2] / cell_size)
+        if (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > limit:
             return None
         return [(x, y, z)
-                for x in range(first[0], last[0] + 1)
-                for y in range(first[1], last[1] + 1)
-                for z in range(first[2], last[2] + 1)]
+                for x in range(x0, x1 + 1)
+                for y in range(y0, y1 + 1)
+                for z in range(z0, z1 + 1)]
 
     @staticmethod
     def _normalize(group, record):
@@ -401,23 +456,42 @@ class CollisionWorld:
 
     def _query(self, low, high, ignore):
         cells = self._cell_range(low, high, _MAX_QUERY_CELLS)
+        shapes = self._shapes
         if cells is None:
-            keys = self._shapes.keys()
+            ordered = sorted(shapes.keys())
         else:
+            grid = self._grid
             keys = set(self._large)
             for cell in cells:
-                keys.update(self._grid.get(cell, ()))
-        return [shape for key in sorted(keys)
-                if (shape := self._shapes[key]).id not in ignore
-                and shape.group not in ignore
-                and _bounds_overlap(low, high, shape.low, shape.high)]
+                bucket = grid.get(cell)
+                if bucket:
+                    keys.update(bucket)
+            ordered = sorted(keys)
+        found = []
+        for key in ordered:
+            shape = shapes[key]
+            if shape.id in ignore or shape.group in ignore:
+                continue
+            if _bounds_overlap(low, high, shape.low, shape.high):
+                found.append(shape)
+        return found
 
     def _near(self, point, delta, radius, segment, ignore, padding=_CONTACT):
-        end = _add(point, delta)
-        extent = (radius + padding, radius + padding, radius + segment + padding)
-        low = tuple(min(point[i], end[i]) - extent[i] for i in range(3))
-        high = tuple(max(point[i], end[i]) + extent[i] for i in range(3))
-        return self._query(low, high, ignore)
+        ex, ey, ez = point[0] + delta[0], point[1] + delta[1], point[2] + delta[2]
+        rx, ry, rz = radius + padding, radius + padding, radius + segment + padding
+        if point[0] < ex:
+            lowx, highx = point[0] - rx, ex + rx
+        else:
+            lowx, highx = ex - rx, point[0] + rx
+        if point[1] < ey:
+            lowy, highy = point[1] - ry, ey + ry
+        else:
+            lowy, highy = ey - ry, point[1] + ry
+        if point[2] < ez:
+            lowz, highz = point[2] - rz, ez + rz
+        else:
+            lowz, highz = ez - rz, point[2] + rz
+        return self._query((lowx, lowy, lowz), (highx, highy, highz), ignore)
 
     def _first_hit(self, point, delta, radius, segment, ignore):
         best = None
@@ -464,7 +538,7 @@ class CollisionWorld:
 
     def _step(self, point, delta, radius, segment, step_height, ignore, baseline):
         horizontal = (delta[0], delta[1], 0.)
-        length = math.hypot(*horizontal[:2])
+        length = _hypot(delta[0], delta[1])
         if length < 1e-7 or delta[2] > 1e-7:
             return None
         direction = _mul(horizontal, 1.0 / length)

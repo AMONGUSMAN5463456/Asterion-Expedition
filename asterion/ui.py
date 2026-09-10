@@ -31,6 +31,11 @@ AMBER = (1.0, 0.69, 0.36, 1.0)
 RED = (1.0, 0.42, 0.36, 1.0)
 LINE = (0.31, 0.61, 0.65, 0.35)
 
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_CARDINALS = {0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S",
+              225: "SW", 270: "W", 315: "NW"}
+_MODE_NAMES = {"surface": "SURFACE", "flight": "ATMOSPHERIC FLIGHT",
+               "orbit": "ORBITAL FLIGHT", "ship": "VESSEL", "space": "DEEP SPACE"}
 
 def _number(value: Any, default: float = 0.0) -> float:
     try:
@@ -76,6 +81,7 @@ class _Label:
             self.node.setFont(font)
         self.node.setAlign(align)
         self.node.setTextColor(*color)
+        self._color = color
         self.node.setShadow(0.0, 0.04)
         self.node.setShadowColor(0.0, 0.01, 0.018, 0.36)
         if width is not None:
@@ -94,7 +100,9 @@ class _Label:
             self._value = text
 
     def color(self, color):
-        self.node.setTextColor(*color)
+        if color != self._color:
+            self.node.setTextColor(*color)
+            self._color = color
 
 
 class _Bar:
@@ -102,15 +110,16 @@ class _Bar:
         owner._rect(parent, x, y, width, height, (0.17, 0.28, 0.33, 0.7))
         self.fill = owner._rect(parent, x, y, width, height, color)
         self._value = None
+        self._color = color
 
     def set(self, value, color=None):
         value = _clamp(value)
         if value != self._value:
             self.fill.setSx(max(0.00001, value))
             self._value = value
-        if color is not None:
+        if color is not None and color != self._color:
             self.fill.setColor(*color)
-
+            self._color = color
 
 class GameUI:
     """HUD, title screen, and scrollable data-driven terminal menus.
@@ -154,6 +163,7 @@ class GameUI:
         self._hud_labels = {}
         self._vital_bars = {}
         self._measurements = {}
+        self._short_cache = {}
         parent = getattr(app, "aspect2d", None)
         self._available = isinstance(parent, NodePath) and not parent.isEmpty()
         if not self._available:
@@ -200,7 +210,11 @@ class GameUI:
 
     def _clean(self, value):
         value = _as_text(value)
-        value = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", value)
+        # Fast path: plain printable ASCII needs no control-strip, no glyph
+        # fallback substitutions, and no ascii-encoding round-trip.
+        if value.isascii() and _CTRL_RE.search(value) is None:
+            return value
+        value = _CTRL_RE.sub("", value)
         if not self._unicode:
             for old, new in (("—", " - "), ("–", "-"), ("•", " / "),
                              ("·", " / "), ("…", "..."), ("→", ">"),
@@ -277,11 +291,20 @@ class GameUI:
 
     def _short(self, value, width, size, bold=False):
         text = self._clean(value).replace("\n", " ")
+        key = (text, width, size, bold)
+        cached = self._short_cache.get(key)
+        if cached is not None:
+            return cached
         if self._measure(text, size, bold)[0] <= width:
-            return text
-        while text and self._measure(text + "...", size, bold)[0] > width:
-            text = text[:-1]
-        return text.rstrip() + "..."
+            result = text
+        else:
+            while text and self._measure(text + "...", size, bold)[0] > width:
+                text = text[:-1]
+            result = text.rstrip() + "..."
+        if len(self._short_cache) >= 1024:
+            self._short_cache.clear()
+        self._short_cache[key] = result
+        return result
 
     def _card(self, parent, x, y, width, height, accent=CYAN, opacity=0.8):
         self._rect(parent, x, y, width, height, (NAVY[0], NAVY[1], NAVY[2], opacity))
@@ -553,8 +576,7 @@ class GameUI:
                                           265 if compact else 310,
                                           26 if compact else 29, True))
         biome = _as_text(view.get("biome", ""))
-        mode_name = {"surface": "SURFACE", "flight": "ATMOSPHERIC FLIGHT",
-                     "orbit": "ORBITAL FLIGHT", "ship": "VESSEL", "space": "DEEP SPACE"}.get(mode, mode.upper())
+        mode_name = _MODE_NAMES.get(mode, mode.upper())
         biome_line = mode_name + ((" / " + biome.upper()) if biome else "")
         labels["biome"].set(self._short(biome_line, 266 if compact else 310, 14))
         detail = view.get("location_detail") or view.get("system_name") or ""
@@ -573,20 +595,23 @@ class GameUI:
         labels["heading"].set(f"{int(heading):03d}")
         center_degree = math.floor(heading / 5) * 5
         px_per_degree = self._compass_half / 43
-        cardinals = {0: "N", 45: "NE", 90: "E", 135: "SE", 180: "S",
-                     225: "SW", 270: "W", 315: "NW"}
+        half = self._compass_half
+        center_x = self.width / 2
+        cardinals = _CARDINALS
         for index, (tick, label) in enumerate(self._compass_ticks):
             degree = center_degree + (index - 9) * 5
             offset = (degree - heading) * px_per_degree
-            if abs(offset) > self._compass_half:
+            if abs(offset) > half:
                 tick.hide()
                 continue
             tick.show()
-            tick.setPos(self.width / 2 + offset, 0, -67)
+            tick.setPos(center_x + offset, 0, -67)
             normalized = degree % 360
-            label.set(cardinals.get(normalized, str(normalized) if normalized % 30 == 0 else ""))
+            text = cardinals.get(normalized)
+            if text is None:
+                text = str(normalized) if normalized % 30 == 0 else ""
+            label.set(text)
             label.color(CYAN if normalized in cardinals else MUTED)
-        labels["scan_status"].set("SPECTRAL SCAN ACTIVE" if view.get("scanner") else "")
 
         objective = view.get("objective") or {}
         if not isinstance(objective, dict):
@@ -602,9 +627,17 @@ class GameUI:
         if ratio is None and isinstance(progress, (float, int)):
             ratio = progress / 100 if progress > 1 else progress
         if ratio is None and isinstance(progress, str):
-            match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", progress)
-            if match and _number(match.group(2)) > 0:
-                ratio = _number(match.group(1)) / _number(match.group(2))
+            # The waypoint/objective text rarely changes; parse it once per
+            # distinct string instead of on every HUD refresh.
+            cached = self._short_cache.get(("ratio", progress))
+            if cached is None:
+                match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", progress)
+                cached = (_number(match.group(1)) / _number(match.group(2))
+                          if match and _number(match.group(2)) > 0 else False)
+                if len(self._short_cache) >= 1024:
+                    self._short_cache.clear()
+                self._short_cache[("ratio", progress)] = cached
+            ratio = cached if cached is not False else None
         self._objective_bar.set(0 if ratio is None else ratio)
         vitals = view.get("vitals") or {}
         if not isinstance(vitals, dict):
@@ -1079,6 +1112,7 @@ class GameUI:
         self._events.ignoreAll()
         self._clear_menu()
         self._measurements.clear()
+        self._short_cache.clear()
         if self.root is not None:
             self.root.removeNode()
         self._destroyed = True

@@ -104,21 +104,33 @@ class AudioManager:
         except (TypeError, ValueError, OverflowError):
             dt = 0.0
         self._clock += dt
-        if not self.enabled:
+        if not self.enabled or not self._loops:
             return
         thrust = _bounded(abs(thrust) if isinstance(thrust, (int, float)) else 0)
-        flying = mode in ("flight", "orbit")
-        targets = {
-            "surface": 0.31 if mode in ("surface", "flight") else 0.0,
-            "space": 0.40 if mode == "orbit" else (0.17 if mode == "title" else 0.0),
-            "engine": (0.10 + 0.40 * thrust) if flying else 0.0,
-        }
+        flying = mode == "flight" or mode == "orbit"
+        surface_t = 0.31 if mode == "surface" or mode == "flight" else 0.0
+        if mode == "orbit":
+            space_t = 0.40
+        elif mode == "title":
+            space_t = 0.17
+        else:
+            space_t = 0.0
+        engine_t = (0.10 + 0.40 * thrust) if flying else 0.0
         fade = 1.0 - math.exp(-dt * 1.5)
+        levels = self._levels
         try:
-            for name, sound in list(self._loops.items()):
+            for name, sound in tuple(self._loops.items()):
                 try:
-                    self._levels[name] += (targets[name] - self._levels[name]) * fade
-                    sound.setVolume(self._levels[name] * self.volume)
+                    if name == "surface":
+                        target = surface_t
+                    elif name == "space":
+                        target = space_t
+                    elif name == "engine":
+                        target = engine_t
+                    else:
+                        target = levels.get(name, 0.0)
+                    levels[name] += (target - levels[name]) * fade
+                    sound.setVolume(levels[name] * self.volume)
                 except Exception:
                     self._failures += 1
                     try:

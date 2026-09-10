@@ -38,6 +38,10 @@ _CONSUMABLES = {
     "fuel_cell": {"fuel": 45}, "warp_cell": {"fuel": 85},
     "repair_kit": {"shield": 65},
 }
+_EVENT_RE = re.compile(r"[A-Za-z0-9_:-]{1,80}")
+_PLANET_RE = re.compile(r"s(?:[0-9]|1[0-9]|2[0-3])-p[0-3]")
+_ORBIT_RE = re.compile(r"orbit:(?:[0-9]|1[0-9]|2[0-3])")
+_ITEM_INDEX = {name: index for index, name in enumerate(ITEMS)}
 
 
 def _int(value, default=0, low=0, high=MAX_COUNT):
@@ -78,14 +82,14 @@ def _valid_position(value):
 
 
 def _planet_id(value):
-    if not isinstance(value, str) or not re.fullmatch(r"s(?:[0-9]|1[0-9]|2[0-3])-p[0-3]", value):
+    if not isinstance(value, str) or _PLANET_RE.fullmatch(value) is None:
         return False
     return True
 
 
 def _depletion_location(value):
     return _planet_id(value) or (isinstance(value, str)
-                                and re.fullmatch(r"orbit:(?:[0-9]|1[0-9]|2[0-3])", value) is not None)
+                                and _ORBIT_RE.fullmatch(value) is not None)
 
 
 def _small_record(record):
@@ -137,7 +141,13 @@ class GameState:
         return 240 + 120 * _int(self.upgrades.get("cargo"), 0, 0, 3)
 
     def cargo_used(self):
-        return sum(_int(value) for value in self.inventory.values())
+        total = 0
+        for value in self.inventory.values():
+            if type(value) is int and 0 <= value <= MAX_COUNT:
+                total += value
+            else:
+                total += _int(value)
+        return total
 
     def add_item(self, item, amount):
         if not isinstance(item, str) or item not in ITEMS or not _quantity(amount):
@@ -160,7 +170,11 @@ class GameState:
         return True
 
     def _can_pay(self, ingredients):
-        return all(_int(self.inventory.get(item)) >= amount for item, amount in ingredients.items())
+        inventory = self.inventory
+        for item, amount in ingredients.items():
+            if _int(inventory.get(item)) < amount:
+                return False
+        return True
 
     def _pay(self, ingredients):
         for item, amount in ingredients.items():
@@ -221,7 +235,7 @@ class GameState:
         if isinstance(sid, bool) or not isinstance(sid, int) or not 0 <= sid < 24:
             return 0
         # A fixed spread prevents buy/sell loops; local demand varies by system.
-        item_number = tuple(ITEMS).index(item)
+        item_number = _ITEM_INDEX[item]
         demand = .83 + ((sid * 17 + item_number * 11 + sid * item_number * 3) % 35) / 100
         value = ITEMS[item]["value"] * demand
         return max(1, math.ceil(value * 1.20) if buy else math.floor(value * .74))
@@ -350,7 +364,7 @@ class GameState:
         return True, "Collected " + ", ".join(f"{amount} {ITEMS[item]['name']}" for item, amount in collected.items()) + "."
 
     def record(self, event, amount=1):
-        if not isinstance(event, str) or not re.fullmatch(r"[A-Za-z0-9_:-]{1,80}", event):
+        if not isinstance(event, str) or _EVENT_RE.fullmatch(event) is None:
             return
         if isinstance(amount, bool) or not isinstance(amount, (float, int)):
             return
@@ -400,7 +414,7 @@ class GameState:
         offers = []
         for index in indexes[:3]:
             template = CONTRACT_TEMPLATES[index]
-            contract = copy.deepcopy(template)
+            contract = dict(template)
             contract.update(id=f"c{sid}-{cycle}-{template['id']}", template=template["id"], system_id=sid)
             if contract["id"] not in existing:
                 offers.append(contract)
@@ -469,7 +483,7 @@ class GameState:
             "system_id", "planet_index", "mode", "position", "heading", "pitch", "ship_position", "vitals",
             "settings", "elapsed", "story_stage", "contracts")}
         clean, _ = self._from_dict(raw)
-        result = {key: copy.deepcopy(getattr(clean, key)) for key in raw}
+        result = {key: getattr(clean, key) for key in raw}
         result["version"] = SAVE_VERSION
         return result
 
@@ -524,7 +538,7 @@ class GameState:
             if len(stats) > 500:
                 changed = True
             for key, value in list(stats.items())[:500]:
-                if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_:-]{1,80}", key):
+                if isinstance(key, str) and _EVENT_RE.fullmatch(key) is not None:
                     number = _number(value)
                     state.stats[key] = int(number) if number.is_integer() else number
                 else:
@@ -604,7 +618,7 @@ class GameState:
                 if not claimed and active_count >= 3:
                     changed = True
                     continue
-                clean = copy.deepcopy(templates[record["template"]])
+                clean = dict(templates[record["template"]])
                 clean.update(id=record["id"], template=record["template"],
                              system_id=_int(record.get("system_id"), 0, 0, 23),
                              baseline=_number(record.get("baseline")), accepted=_number(record.get("accepted"), 0, 0, state.elapsed),

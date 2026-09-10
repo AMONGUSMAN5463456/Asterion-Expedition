@@ -22,6 +22,29 @@ _LAST = ("adia", "alis", "ara", "en", "essa", "ian", "ion", "ora", "une", "yth",
 _ECONOMIES = ("Botanical exchange", "Ore refining", "Survey technology", "Habitat fabrication", "Archive conservation", "Long-range logistics")
 _STAR_COLORS = ((1.0, .84, .60), (.61, .81, 1.0), (1.0, .57, .34), (.87, .91, 1.0), (1.0, .91, .69), (.89, .67, 1.0))
 _BIOME_IDS = tuple(BIOMES)
+_sin = math.sin
+_cos = math.cos
+_hypot = math.hypot
+_DEFAULT_PHASE = (UNIVERSE_SEED % 99991) * .00173
+
+
+@lru_cache(maxsize=64)
+def _cached_phase(seed):
+    """Seed phase for terrain sampling; unparseable seeds use the default."""
+    try:
+        if isinstance(seed, bool):
+            raise ValueError("bool seed coerces to default")
+        return (int(seed) % 99991) * .00173
+    except (TypeError, ValueError, OverflowError):
+        return _DEFAULT_PHASE
+
+
+def _phase_for_seed(seed):
+    try:
+        hash(seed)
+    except TypeError:
+        return _DEFAULT_PHASE
+    return _cached_phase(seed)
 
 
 def _index(value, maximum, label):
@@ -74,7 +97,7 @@ def generate_system(index):
 
 def galaxy_catalog():
     return [dict(id=i, name=_SYSTEM_NAMES[i], description=f"{_ECONOMIES[i % len(_ECONOMIES)]} · 4 worlds",
-                 coordinates=_system(i)["coordinates"], star_color=_system(i)["star_color"])
+                 coordinates=(s := _system(i))["coordinates"], star_color=s["star_color"])
             for i in range(SYSTEM_COUNT)]
 
 
@@ -115,18 +138,13 @@ def terrain_height(seed, x, y):
         return 20.0
     # Limit enormous input before trigonometry; ordinary play is unaffected.
     x, y = max(-1e7, min(1e7, x)), max(-1e7, min(1e7, y))
-    try:
-        if isinstance(seed, bool):
-            raise ValueError("bool seed coerces to default")
-        phase = (int(seed) % 99991) * .00173
-    except (TypeError, ValueError, OverflowError):
-        phase = (UNIVERSE_SEED % 99991) * .00173
-    broad = 9.2 * math.sin(x * .0062 + phase) * math.cos(y * .0071 - phase * .73)
-    ridges = 6.0 * math.sin((x + y) * .012 + phase * 1.3)
-    rolling = 3.0 * math.cos(x * .031 - y * .018 + phase * .5)
-    detail = 1.1 * math.sin(x * .076 + phase) * math.cos(y * .063 + phase)
+    phase = _phase_for_seed(seed)
+    broad = 9.2 * _sin(x * .0062 + phase) * _cos(y * .0071 - phase * .73)
+    ridges = 6.0 * _sin((x + y) * .012 + phase * 1.3)
+    rolling = 3.0 * _cos(x * .031 - y * .018 + phase * .5)
+    detail = 1.1 * _sin(x * .076 + phase) * _cos(y * .063 + phase)
     natural = 18.0 + broad + ridges + rolling + detail
-    radius = math.hypot(x, y)
+    radius = _hypot(x, y)
     blend = max(0.0, min(1.0, (radius - 42.0) / 150.0))
     blend = blend * blend * (3.0 - 2.0 * blend)
     return 20.0 + (natural - 20.0) * blend

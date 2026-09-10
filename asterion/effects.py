@@ -61,6 +61,7 @@ class PlayerEffects:
         self._scan = 0.0
         self._boost = 0.0
         self._contact = 0.0
+        self._emission_visible = False
         self._mode = None
         self._destroyed = False
         self._make_tool()
@@ -238,40 +239,53 @@ class PlayerEffects:
             elif mode in ("flight", "orbit"):
                 self.cockpit.show()
             self._mode = mode
+            self._emission_visible = False
+            self.emission.hide()
         t = self._time
+        sin = math.sin
         if mode == "surface":
-            recoil = max(0.0, math.sin(t * 27.0)) ** 3 * self._mining
-            bob = math.sin(t * 8.5) * .008 * self._motion * motion
+            mining = self._mining
+            recoil = max(0.0, sin(t * 27.0)) ** 3 * mining
+            bob = sin(t * 8.5) * .008 * self._motion * motion
             # The compact tool occupies the lower-right edge. Mining raises it
             # a little to acknowledge input while keeping the target clear.
-            self.tool.setPos(.350 + math.sin(t * 1.6) * .002 * motion + bob * .4,
+            self.tool.setPos(.350 + sin(t * 1.6) * .002 * motion + bob * .4,
                              1.02 - recoil * .013 * motion,
-                             -.345 + math.sin(t * 2.0) * .002 * motion + bob
-                             + self._mining * .014 - recoil * .004 * motion)
-            self.tool.setHpr(10.0 + math.sin(t * 1.3) * .18 * motion,
+                             -.345 + sin(t * 2.0) * .002 * motion + bob
+                             + mining * .014 - recoil * .004 * motion)
+            self.tool.setHpr(10.0 + sin(t * 1.3) * .18 * motion,
                              6.0 + recoil * 1.2 * motion, -4.0 + bob * 45.0)
-            pulse = 0.82 + self._scan * 0.12 + self._mining * (0.09 + 0.06 * math.sin(t * 16))
+            scan = self._scan
+            pulse = 0.82 + scan * 0.12 + mining * (0.09 + 0.06 * sin(t * 16))
             self.optics.setColorScale(pulse, pulse, pulse, 1)
-            self.crown.setR(t * (12.0 + 100.0 * self._scan))
-            self.crown.setColorScale(0.78 + self._scan * 0.22, 1, 1, 1)
-            if self._mining > 0.03:
-                self.emission.show()
+            self.crown.setR(t * (12.0 + 100.0 * scan))
+            self.crown.setColorScale(0.78 + scan * 0.22, 1, 1, 1)
+            if mining > 0.03:
+                if not self._emission_visible:
+                    self.emission.show()
+                    self._emission_visible = True
                 self.emission.setScale(0.7 + recoil * 0.8)
-                self.emission.setColorScale(1, 1, 1, self._mining)
-            else:
+                self.emission.setColorScale(1, 1, 1, mining)
+            elif self._emission_visible:
                 self.emission.hide()
+                self._emission_visible = False
         elif mode in ("flight", "orbit"):
             intensity = self._motion * (.45 + self._boost * .55)
-            self.cockpit.setPos(math.sin(t * 29.0) * .0006 * intensity * motion, 0,
-                                math.sin(t * 37.0) * .0008 * intensity * motion)
+            self.cockpit.setPos(sin(t * 29.0) * .0006 * intensity * motion, 0,
+                                sin(t * 37.0) * .0008 * intensity * motion)
             brightness = .92 + .04 * self._motion
             self.instruments.setColorScale(brightness, brightness, brightness, 1)
-            color = _AMBER if braking or self._contact > .08 else _CYAN
-            self.indicators.setColorScale(*color, 1)
+            contact = self._contact
+            indicator = _AMBER if braking or contact > .08 else _CYAN
+            self.indicators.setColorScale(indicator[0], indicator[1], indicator[2], 1)
+            boost = self._boost > .3 or braking
+            thresh = self._motion * 8
+            amber = _AMBER
+            cyan = _CYAN
             for index, node in self.thrust_segments:
-                strength = 1.0 if self._motion * 8 > index else .12
-                color = _AMBER if self._boost > .3 or braking else _CYAN
-                node.setColorScale(*(c * strength for c in color), 1)
+                strength = 1.0 if thresh > index else .12
+                color = amber if boost else cyan
+                node.setColorScale(color[0] * strength, color[1] * strength, color[2] * strength, 1)
 
     def destroy(self):
         if not self._destroyed:

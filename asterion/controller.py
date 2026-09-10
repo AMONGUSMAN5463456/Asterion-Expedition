@@ -24,6 +24,22 @@ PHYSICS_STEP = 1.0 / 120.0
 JUMP_BUFFER = 0.16
 COYOTE_TIME = 0.13
 _COORDINATE_LIMIT = 10_000_000.0
+_exp = math.exp
+_BUTTONS = None
+
+
+def _buttons():
+    """Polling buttons built once; KeyboardButton objects are immutable."""
+    global _BUTTONS
+    cached = _BUTTONS
+    if cached is None:
+        cached = {key: KeyboardButton.asciiKey(key) for key in ("w", "a", "s", "d")}
+        cached.update(space=KeyboardButton.space(), shift=KeyboardButton.shift(),
+                      control=KeyboardButton.control(), arrow_up=KeyboardButton.up(),
+                      arrow_down=KeyboardButton.down(), arrow_left=KeyboardButton.left(),
+                      arrow_right=KeyboardButton.right())
+        _BUTTONS = cached
+    return cached
 
 
 def _number(value, default=0.0, minimum=-math.inf, maximum=math.inf):
@@ -46,7 +62,7 @@ def _vector(value, fallback=(0.0, 0.0, 0.0)):
 
 def _accelerate(velocity, target, response, dt):
     """Exact integration of an exponential approach to a constant target."""
-    decay = math.exp(-response * dt)
+    decay = _exp(-response * dt)
     displacement = target * dt + (velocity - target) * ((1.0 - decay) / response)
     return target + (velocity - target) * decay, displacement
 
@@ -277,11 +293,10 @@ class PlayerController(DirectObject):
         watcher = getattr(self.app, "mouseWatcherNode", None)
         if watcher is None or self._window() is None:
             return
-        buttons = {key: KeyboardButton.asciiKey(key) for key in ("w", "a", "s", "d")}
-        buttons.update(space=KeyboardButton.space(), shift=KeyboardButton.shift(),
-                       control=KeyboardButton.control(), arrow_up=KeyboardButton.up(),
-                       arrow_down=KeyboardButton.down(), arrow_left=KeyboardButton.left(),
-                       arrow_right=KeyboardButton.right())
+        try:
+            buttons = _buttons()
+        except (AttributeError, TypeError, RuntimeError):
+            return
         try:
             for key, button in buttons.items():
                 self.keys[key] = bool(watcher.isButtonDown(button))
@@ -327,8 +342,8 @@ class PlayerController(DirectObject):
     def forward(self):
         heading = math.radians(_number(self.heading) % 360.0)
         pitch = math.radians(_number(self.pitch, 0, -89.0, 89.0))
-        return Vec3(-math.sin(heading) * math.cos(pitch),
-                    math.cos(heading) * math.cos(pitch), math.sin(pitch))
+        sh, ch, sp, cp = math.sin(heading), math.cos(heading), math.sin(pitch), math.cos(pitch)
+        return Vec3(-sh * cp, ch * cp, sp)
 
     def _height(self, height_fn, x, y):
         try:
@@ -374,6 +389,11 @@ class PlayerController(DirectObject):
         steps = max(1, math.ceil(dt / PHYSICS_STEP))
         step = dt / steps
         gravity = _number(gravity, 12, 1, 40)
+        upgrades = upgrades or {}
+        decay_feedback = _exp(-5.0 * step)
+        decay_step = _exp(-15.0 * step)
+        decay_landing = _exp(-10.0 * step)
+        mouse_step_x, mouse_step_y = dx / steps, dy / steps
         for _ in range(steps):
             if smoothing > 0:
                 self._mouse_velocity, mouse_motion = _accelerate(
@@ -381,7 +401,7 @@ class PlayerController(DirectObject):
                 mouse_x, mouse_y = mouse_motion.x, mouse_motion.y
             else:
                 self._mouse_velocity = Vec3(0)
-                mouse_x, mouse_y = dx / steps, dy / steps
+                mouse_x, mouse_y = mouse_step_x, mouse_step_y
             turn = (-mouse_x * sensitivity
                     + self._axis("arrow_left", "arrow_right") * 100.0 * step)
             tilt = (-mouse_y * sensitivity * invert
@@ -390,14 +410,14 @@ class PlayerController(DirectObject):
             # consistent at 30, 60, and high refresh rates.
             self._turn_view(turn * 0.5, tilt * 0.5)
             self._space_hold = self._space_hold + step if space else 0.0
-            self.collision_feedback *= math.exp(-5.0 * step)
-            self._camera_step *= math.exp(-15.0 * step)
-            self._landing_offset *= math.exp(-10.0 * step)
+            self.collision_feedback *= decay_feedback
+            self._camera_step *= decay_step
+            self._landing_offset *= decay_landing
             previous = Vec3(self.position)
             if self.mode == "surface":
-                self._walk(step, height_fn, vitals, upgrades or {}, gravity)
+                self._walk(step, height_fn, vitals, upgrades, gravity)
             else:
-                self._fly(step, height_fn, vitals, upgrades or {})
+                self._fly(step, height_fn, vitals, upgrades)
             self._turn_view(turn * 0.5, tilt * 0.5)
             self._update_camera_motion(step, previous, turn / step)
         self.position = _vector(self.position, self._last_valid_position)
@@ -503,15 +523,17 @@ class PlayerController(DirectObject):
             self._jump_cut = True
 
         h = math.radians(self.heading)
-        wish = Vec3(-math.sin(h), math.cos(h), 0) * self._axis("w", "s")
-        wish += Vec3(math.cos(h), math.sin(h), 0) * self._axis("d", "a")
+        sh, ch = math.sin(h), math.cos(h)
+        wish = Vec3(-sh, ch, 0) * self._axis("w", "s")
+        wish += Vec3(ch, sh, 0) * self._axis("d", "a")
         if wish.lengthSquared() > 1:
             wish.normalize()
-        sprint = 1.0 if self._key("shift") and wish.lengthSquared() > 0 else 0.0
+        wish_len2 = wish.lengthSquared()
+        sprint = 1.0 if self._key("shift") and wish_len2 > 0 else 0.0
         self._sprint_amount, _ = _accelerate(self._sprint_amount, sprint, 12.0, dt)
         target = wish * (9.0 + 7.0 * self._sprint_amount)
         horizontal = Vec3(self.velocity.x, self.velocity.y, 0)
-        stopping = wish.lengthSquared() < 1e-6
+        stopping = wish_len2 < 1e-6
         reversing = horizontal.dot(wish) < -0.1
         response = (24.0 if stopping or reversing else 18.0) if was_grounded else 5.0
         if self._key("control") and not was_grounded:
@@ -604,13 +626,16 @@ class PlayerController(DirectObject):
         self.grounded = False
         self._solid_grounded = False
         h = math.radians(self.heading)
+        sh, ch = math.sin(h), math.cos(h)
         thrust = self._axis("w", "s")
         wish = self.forward() * (thrust if thrust >= 0 else thrust * 0.45)
-        wish += Vec3(math.cos(h), math.sin(h), 0) * self._axis("d", "a") * 0.72
+        wish += Vec3(ch, sh, 0) * self._axis("d", "a") * 0.72
         wish += Vec3(0, 0, 1) * self._axis("space", "control") * 0.70
-        if wish.lengthSquared() > 1:
+        wish_len2 = wish.lengthSquared()
+        if wish_len2 > 1:
             wish.normalize()
-        amount = min(1.0, wish.length())
+            wish_len2 = 1.0
+        amount = min(1.0, math.sqrt(wish_len2))
         fuel = _number(vitals.get("fuel", 100), 100, 0, 100)
         boost = self._key("shift") and amount > 0 and fuel > 0
         orbital = self.mode == "orbit"
@@ -694,14 +719,17 @@ class PlayerController(DirectObject):
             position.z = floor
             self._clip_contact(Vec3(0, 0, 1))
             self.grounded = True
+        height = self._height
         for _ in range(4):
             samples = max(1, math.ceil(math.hypot(remaining.x, remaining.y) / 0.5))
             lower, hit = 0.0, None
+            px, py, pz = position.x, position.y, position.z
+            rx, ry, rz = remaining.x, remaining.y, remaining.z
             for sample in range(1, samples + 1):
                 fraction = sample / samples
-                point = position + remaining * fraction
-                floor = self._height(height_fn, point.x, point.y) + SHIP_CLEARANCE
-                if point.z < floor - 0.0001:
+                qx, qy = px + rx * fraction, py + ry * fraction
+                floor = height(height_fn, qx, qy) + SHIP_CLEARANCE
+                if pz + rz * fraction < floor - 0.0001:
                     hit = fraction
                     break
                 lower = fraction
@@ -711,9 +739,9 @@ class PlayerController(DirectObject):
             upper = hit
             for _ in range(12):
                 middle = (lower + upper) * 0.5
-                point = position + remaining * middle
-                floor = self._height(height_fn, point.x, point.y) + SHIP_CLEARANCE
-                if point.z < floor:
+                qx, qy = px + rx * middle, py + ry * middle
+                floor = height(height_fn, qx, qy) + SHIP_CLEARANCE
+                if pz + rz * middle < floor:
                     upper = middle
                 else:
                     lower = middle

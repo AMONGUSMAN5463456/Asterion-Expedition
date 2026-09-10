@@ -37,8 +37,15 @@ def default_save_dir() -> Path:
 
 
 def distance(a, b) -> float:
-    return (Vec3(*a) - Vec3(*b)).length()
-
+    if isinstance(a, (tuple, list)):
+        ax, ay, az = a[0], a[1], a[2]
+    else:
+        ax, ay, az = a.x, a.y, a.z
+    if isinstance(b, (tuple, list)):
+        bx, by, bz = b[0], b[1], b[2]
+    else:
+        bx, by, bz = b.x, b.y, b.z
+    return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2)
 
 def quantity_text(items) -> str:
     return "  /  ".join(f"{ITEMS.get(k, {}).get('name', k.replace('_', ' ').title())} {v}" for k, v in items.items()) or "No materials required"
@@ -83,13 +90,14 @@ class ExpeditionApp(ShowBase):
         self.autosave_time = 0.0
         self.hud_time = 0.0
         self.scanner_time = 0.0
+        self.beam = None
+        self._beam_child = None
         self.mine_time = 0.0
         self.mine_id = ""
         self.target = None
         self.target_distance = 0.0
         self.nearby = None
         self.ship = None
-        self.beam = None
         self.autopilot = None
         self.transition = None
         self.transition_elapsed = 0.0
@@ -116,6 +124,9 @@ class ExpeditionApp(ShowBase):
         if not offscreen:
             self.taskMgr.add(self._frame, "expedition-update")
 
+    def _apply_ambient_occlusion(self):
+        enabled = (self._ao_available and self.game.mode == "surface"
+                   and self.game.settings.get("ambient_occlusion", True))
         if enabled == (self._ao_filters is not None):
             return
         if not enabled:
@@ -529,40 +540,55 @@ class ExpeditionApp(ShowBase):
         return True
 
     def _find_target(self):
-        p = Vec3(self.controller.position)
-        forward = self.controller.forward()
+        controller = self.controller
+        p = controller.position
+        px, py, pz = p.x, p.y, p.z
+        forward = controller.forward()
+        fx, fy, fz = forward.x, forward.y, forward.z
         best = None
         best_score = 1e9
         nearby = None
         nearby_dist = 1e9
+        mode = controller.mode
+        orbit = mode == "orbit"
         scan_range = 100 * (1 + self.game.upgrades.get("scanner", 0) * .4)
-        max_range = 1100 if self.controller.mode == "orbit" else (scan_range if self.scanner_time else 38)
+        max_range = 1100 if orbit else (scan_range if self.scanner_time else 38)
         for entity in self.world.interactables():
-            center = Vec3(*entity["pos"])
+            pos = entity["pos"]
+            ex, ey, ez = pos[0], pos[1], pos[2]
             radius = float(entity.get("radius", 2))
-            if self.controller.mode != "orbit":
-                center.z += min(radius * .6, 4)
-            offset = center - p
-            length = offset.length()
+            if not orbit:
+                ez += radius * .6 if radius * .6 < 4 else 4
+            dx, dy, dz = ex - px, ey - py, ez - pz
+            length = math.sqrt(dx * dx + dy * dy + dz * dz)
             kind = entity["kind"]
-            interaction_range = 650 if kind == "station" else 18
-            if kind in ("outpost", "ruin", "beacon", "station", "habitat", "extractor", "solar") and length < interaction_range and length < nearby_dist:
-                nearby, nearby_dist = entity, length
+            if kind in ("outpost", "ruin", "beacon", "station", "habitat", "extractor", "solar"):
+                interaction_range = 650 if kind == "station" else 18
+                if length < interaction_range and length < nearby_dist:
+                    nearby, nearby_dist = entity, length
             if length > max_range or length < .01:
                 continue
-            along = offset.dot(forward)
+            along = (dx * fx + dy * fy + dz * fz)
             if along <= 0:
                 continue
-            side = (offset - forward * along).length()
-            tolerance = max(radius, length * .035)
-            if side <= tolerance:
-                score = along + side * 3
-                if score < best_score and self._visible_target(entity, center):
-                    best, best_score = entity, score
+            side_sq = dx * dx + dy * dy + dz * dz - along * along
+            if side_sq < 0:
+                side_sq = 0
+            tolerance = radius if radius > length * .035 else length * .035
+            if side_sq <= tolerance * tolerance:
+                score = along + math.sqrt(side_sq) * 3
+                if score < best_score:
+                    center = Vec3(ex, ey, ez)
+                    if self._visible_target(entity, center):
+                        best, best_score = entity, score
         self.target = best
-        self.target_distance = distance(p, best["pos"]) if best else 0
+        if best is not None:
+            bpos = best["pos"]
+            dx, dy, dz = bpos[0] - px, bpos[1] - py, bpos[2] - pz
+            self.target_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        else:
+            self.target_distance = 0
         self.nearby = nearby
-
     def scan(self):
         if not self.playing:
             return
@@ -664,13 +690,16 @@ class ExpeditionApp(ShowBase):
         if self.mine_id != entity["id"]:
             self.mine_time = 0
             self.mine_id = entity["id"]
-        start = Vec3(self.controller.position) + self.controller.forward() * .8 + Vec3(.18, 0, -.2)
-        end = Vec3(*entity["pos"]) + Vec3(0, 0, min(entity.get("radius", 2) * .5, 3))
+        pos = self.controller.position
+        fwd = self.controller.forward()
+        sx, sy, sz = pos.x + fwd.x * .8 + .18, pos.y + fwd.y * .8, pos.z + fwd.z * .8 - .2
+        epos = entity["pos"]
+        ex, ey, ez = epos[0], epos[1], epos[2] + min(entity.get("radius", 2) * .5, 3)
         line = LineSegs("mining-beam")
         line.setThickness(3)
         line.setColor(.15, .95, 1, 1)
-        line.moveTo(start)
-        line.drawTo(end)
+        line.moveTo(sx, sy, sz)
+        line.drawTo(ex, ey, ez)
         if self.beam is None:
             self.beam = self.render.attachNewNode("mining-beam")
             self.beam.setLightOff()
@@ -706,6 +735,7 @@ class ExpeditionApp(ShowBase):
         if self.beam is not None:
             self.beam.removeNode()
             self.beam = None
+            self._beam_child = None
 
     def _survival(self, dt):
         v = self.game.vitals
@@ -863,26 +893,27 @@ class ExpeditionApp(ShowBase):
                 self.transition = None
                 self.fade.hide()
                 self.controller.set_enabled(self.started and not self.ui.panel_open and not self.offscreen)
+        controller = self.controller
         if self.playing:
             self.game.elapsed += dt
             self.autosave_time += dt
             self.base_time += dt
             self.scanner_time = max(0, self.scanner_time - dt)
             phase = (self.game.elapsed + (self.planet["seed"] % 40)) % 330
-            self.storm = min(1, max(0, (phase - 245) / 20), max(0, (325 - phase) / 20)) if self.controller.mode != "orbit" else 0
+            self.storm = min(1, max(0, (phase - 245) / 20), max(0, (325 - phase) / 20)) if controller.mode != "orbit" else 0
             if not self._update_autopilot(dt):
-                self.controller.update(dt, self.world.height, self.game.vitals,
+                controller.update(dt, self.world.height, self.game.vitals,
                                        self.game.upgrades, self.game.settings, enabled=True,
                                        gravity=self.planet.get("gravity", 12))
-            self.world.update(dt, self.controller.position, self.game.elapsed, self.storm)
+            self.world.update(dt, controller.position, self.game.elapsed, self.storm)
             self._find_target()
             self._mine(dt)
             self._survival(dt)
-            if self.controller.mode == "flight":
-                p = self.controller.position
+            if controller.mode == "flight":
+                p = controller.position
                 if p.z - self.world.height(p.x, p.y) >= 420 and not self.transition:
                     self.transition_to(self.enter_orbit, "Leaving atmosphere // orbital insertion")
-            elif self.controller.mode == "orbit" and not self.autopilot:
+            elif controller.mode == "orbit" and not self.autopilot:
                 self._constrain_orbit()
             if self.autosave_time >= 60:
                 self.save_game(announce=False)
@@ -890,14 +921,14 @@ class ExpeditionApp(ShowBase):
             self._clear_beam()
             self.mine_time = 0
             if not self.started:
-                self.world.update(dt, self.controller.position, self.game.elapsed + time.monotonic() % 60, 0)
-        self.audio.update(dt, self.controller.mode, abs(self.controller.speed) / 100)
-        self.effects.update(dt if self.playing else 0, self.controller.mode if self.started else "hidden",
-                            mining=self.mine_time > 0, thrust=min(1, abs(self.controller.speed) / (16 if self.controller.mode == "surface" else 150)),
+                self.world.update(dt, controller.position, self.game.elapsed + time.monotonic() % 60, 0)
+        self.audio.update(dt, controller.mode, abs(controller.speed) / 100)
+        self.effects.update(dt if self.playing else 0, controller.mode if self.started else "hidden",
+                            mining=self.mine_time > 0, thrust=min(1, abs(controller.speed) / (16 if controller.mode == "surface" else 150)),
                             scanner=self.scanner_time > 0,
                             camera_motion=self.game.settings.get("camera_motion", .35),
-                            boosting=self.controller.boosting, braking=self.controller.braking,
-                            collision_feedback=self.controller.collision_feedback)
+                            boosting=controller.boosting, braking=controller.braking,
+                            collision_feedback=controller.collision_feedback)
         if self._ao_filters is not None:
             try:
                 self._ao_filters.update()
@@ -915,18 +946,22 @@ class ExpeditionApp(ShowBase):
         return task.cont
 
     def _view(self):
-        mode = self.controller.mode
-        p = self.controller.position
+        controller = self.controller
+        mode = controller.mode
+        p = controller.position
+        px, py, pz = p.x, p.y, p.z
         prompt = "C scan   Hold LMB mine   E interact   H field guide"
         name = ""
-        if self.target:
-            entity = self.target
-            name = f"{entity['name']}  /  {self.target_distance:.0f} m"
+        target = self.target
+        target_distance = self.target_distance
+        if target:
+            entity = target
+            name = f"{entity['name']}  /  {target_distance:.0f} m"
             if entity.get("resource"):
                 name += f"  /  {ITEMS.get(entity['resource'], {}).get('name', entity['resource'])}"
             if entity["kind"] in ("mineral", "flora", "asteroid"):
                 reach = 1000 if entity["kind"] == "asteroid" else 38
-                prompt = "Hold LMB extract   C catalogue" if self.target_distance <= reach else f"C catalogue   Approach within {reach} m to extract"
+                prompt = "Hold LMB extract   C catalogue" if target_distance <= reach else f"C catalogue   Approach within {reach} m to extract"
             else:
                 prompt = "C catalogue specimen" if entity["kind"] == "fauna" else "Approach the site and press E to interact"
         if mode == "surface" and self.ship is not None and distance(p, self.game.ship_position) < 19:
@@ -940,34 +975,45 @@ class ExpeditionApp(ShowBase):
         if self.autopilot:
             name = f"APPROACH // {self.autopilot['name']}"
             prompt = "E cancels automatic approach"
-        if self.navigation and not self.target:
-            name = f"{self.navigation['name']}  /  {distance(p, self.navigation['pos']):.0f} m"
+        navigation = self.navigation
+        if navigation and not target:
+            npos = navigation["pos"]
+            dx, dy, dz = npos[0] - px, npos[1] - py, npos[2] - pz
+            name = f"{navigation['name']}  /  {math.sqrt(dx * dx + dy * dy + dz * dz):.0f} m"
         objective = self.game.objective()
-        if self.navigation:
-            d = Vec3(*self.navigation["pos"]) - p
-            objective = {"title": "WAYPOINT // " + self.navigation["name"],
-                         "description": f"{d.length():.0f} m away. Bearing {(math.degrees(math.atan2(-d.x, d.y)) % 360):.0f} deg. M selects another location.",
+        if navigation:
+            npos = navigation["pos"]
+            dx, dy, dz = npos[0] - px, npos[1] - py, npos[2] - pz
+            dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            bearing = math.degrees(math.atan2(-dx, dy)) % 360
+            objective = {"title": "WAYPOINT // " + navigation["name"],
+                         "description": f"{dist:.0f} m away. Bearing {bearing:.0f} deg. M selects another location.",
                          "progress": "Surface navigation"}
-        duration = max(.25, float(self.target.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35)) if self.target else 1
+        duration = max(.25, float(target.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35)) if target else 1
         return {"mode": mode, "location": self.system["name"] if mode == "orbit" else self.planet["name"],
                 "biome": "INTERPLANETARY SPACE" if mode == "orbit" else self.planet["biome"].upper(),
-                "coordinates": f"{p.x:+.0f} / {p.y:+.0f}", "speed": self.controller.speed,
-                "altitude": p.z - self.world.height(p.x, p.y) if mode != "orbit" else p.z,
+                "coordinates": f"{px:+.0f} / {py:+.0f}", "speed": controller.speed,
+                "altitude": pz - self.world.height(px, py) if mode != "orbit" else pz,
                 "vitals": self.game.vitals, "credits": self.game.credits, "cargo": self.game.cargo_used(),
                 "capacity": self.game.capacity(), "target": name, "prompt": prompt,
                 "objective": objective, "notice": self.notice if self.notice_time else "", "scanner": bool(self.scanner_time),
                 "storm": self.storm > .2, "mining_progress": min(1, self.mine_time / duration),
-                "heading": self.controller.heading, "pitch": self.controller.pitch, "version": __version__,
-                "grounded": self.controller.grounded, "jetpacking": self.controller.jetpacking,
-                "boosting": self.controller.boosting, "braking": self.controller.braking,
-                "drifting": self.controller.drifting, "throttle": self.controller.throttle,
-                "vertical_speed": self.controller.velocity.z,
+                "heading": controller.heading, "pitch": controller.pitch, "version": __version__,
+                "grounded": controller.grounded, "jetpacking": controller.jetpacking,
+                "boosting": controller.boosting, "braking": controller.braking,
+                "drifting": controller.drifting, "throttle": controller.throttle,
+                "vertical_speed": controller.velocity.z,
                 "flight_assist": self.game.settings.get("flight_assist", True),
-                "collision_feedback": self.controller.collision_feedback}
+                "collision_feedback": controller.collision_feedback}
 
     @staticmethod
     def button(label, action, payload=None, enabled=True):
         return {"label": label, "action": action, "payload": payload, "enabled": enabled}
+
+    def _tabs(self, active):
+        return [{"label": title, "action": "open", "payload": key, "active": active == key}
+                for key, title in (("inventory", "CARGO"), ("craft", "FABRICATOR"), ("map", "NAVIGATION"),
+                                   ("journal", "EXPEDITION"), ("build", "CONSTRUCTION"))]
 
     def open_panel(self, kind, context=None):
         if self.transition:

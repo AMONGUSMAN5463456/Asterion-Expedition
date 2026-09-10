@@ -51,6 +51,15 @@ def _finite(value, fallback=0.0):
         return fallback
     return number if math.isfinite(number) else fallback
 
+def _xyz(value):
+    """Coerce a position-like to a 3-tuple of finite floats."""
+    if isinstance(value, (str, bytes)):
+        return (0.0, 0.0, 20.0)
+    try:
+        return (_finite(value[0]), _finite(value[1]), _finite(value[2]))
+    except (TypeError, ValueError, IndexError, KeyError):
+        return (0.0, 0.0, 20.0)
+
 _PLANET_REQUIRED = ("id", "seed", "biome", "sky", "day_length", "accent")
 
 
@@ -119,6 +128,7 @@ def _placed_shapes(shapes,owner,position,heading=0,scale=1):
     return result
 
 
+@lru_cache(maxsize=32)
 def _flora_shapes(style,seed):
     if style=="mushroom":
         rng=random.Random(seed)
@@ -134,6 +144,7 @@ def _flora_shapes(style,seed):
     return [_cylinder("trunk",(0,0,1.65),.53,3.3)]
 
 
+@lru_cache(maxsize=8)
 def _structure_shapes(kind):
     """Deliberately compound: an open pavilion or doorway stays traversable."""
     shapes=[]
@@ -323,38 +334,47 @@ class WorldRenderer:
                 return 20.0
         except (ValueError,TypeError,OverflowError):
             return 20.0
-        x0,y0 = math.floor(x/TERRAIN_STEP)*TERRAIN_STEP,math.floor(y/TERRAIN_STEP)*TERRAIN_STEP
+        sample=self._sample
+        floor=math.floor
+        x0,y0 = floor(x/TERRAIN_STEP)*TERRAIN_STEP,floor(y/TERRAIN_STEP)*TERRAIN_STEP
         fx,fy = (x-x0)/TERRAIN_STEP,(y-y0)/TERRAIN_STEP
-        a = self._sample(x0,y0)
-        b = self._sample(x0+TERRAIN_STEP,y0)
-        c = self._sample(x0+TERRAIN_STEP,y0+TERRAIN_STEP)
-        d = self._sample(x0,y0+TERRAIN_STEP)
+        a = sample(x0,y0)
+        b = sample(x0+TERRAIN_STEP,y0)
+        c = sample(x0+TERRAIN_STEP,y0+TERRAIN_STEP)
+        d = sample(x0,y0+TERRAIN_STEP)
         return a+(b-a)*fx+(c-b)*fy if fy <= fx else a+(c-d)*fx+(d-a)*fy
 
     def _normal(self,x,y):
         step=TERRAIN_STEP
-        n=Vec3(self._sample(x-step,y)-self._sample(x+step,y),
-               self._sample(x,y-step)-self._sample(x,y+step),2*step)
-        n.normalize()
-        return tuple(n)
+        sample=self._sample
+        dx=sample(x-step,y)-sample(x+step,y)
+        dy=sample(x,y-step)-sample(x,y+step)
+        dz=2*step
+        inv=1.0/math.sqrt(dx*dx+dy*dy+dz*dz)
+        return (dx*inv,dy*inv,dz*inv)
 
     def _ground_color(self,x,y,z):
-        base = self.planet["ground"]
-        wave = math.sin(x*.047+y*.022+self._seed_value*.01)*math.cos(y*.051-x*.013)
-        fine = math.sin(x*.31+y*.23)*math.cos(y*.17)
+        planet=self.planet
+        base = planet["ground"]
+        seed_value=self._seed_value
+        sample=self._sample
+        sin=math.sin
+        cos=math.cos
+        wave = sin(x*.047+y*.022+seed_value*.01)*cos(y*.051-x*.013)
+        fine = sin(x*.31+y*.23)*cos(y*.17)
         col = shade(base,1.12 + .29*wave + .095*fine)
         # Broad irregular patches, pale shores, and rock-coloured steep slopes.
-        patch = math.sin(x*.023+self._seed_value)*math.sin(y*.028+2.4)
+        patch = sin(x*.023+seed_value)*sin(y*.028+2.4)
         if patch > .25:
-            col=mix(col,shade(self.planet["flora"],.74),(patch-.25)*.52)
-        slope=abs(self._sample(x+4,y)-self._sample(x-4,y))+abs(self._sample(x,y+4)-self._sample(x,y-4))
+            col=mix(col,shade(planet["flora"],.74),(patch-.25)*.52)
+        slope=abs(sample(x+4,y)-sample(x-4,y))+abs(sample(x,y+4)-sample(x,y-4))
         col=mix(col,mix(base,(.33,.31,.29),.63),max(0,slope-2.2)*.16)
-        if z < self.planet["water_level"]+2.5:
+        if z < planet["water_level"]+2.5:
             col=mix(col,(.72,.71,.53),.4)
-        if self.planet["biome"] == "frozen" and z > 19:
+        if planet["biome"] == "frozen" and z > 19:
             col=mix(col,(.86,.94,.97),min(.5,(z-19)*.04))
         if 5<y<65:
-            trail_x=32*y/62+math.sin(y*.065)*2.5
+            trail_x=32*y/62+sin(y*.065)*2.5
             trail=max(0,1-abs(x-trail_x)/3.8)
             col=mix(col,mix(base,(.67,.6,.4),.55),trail*.8)
         return col
@@ -374,12 +394,15 @@ class WorldRenderer:
         mesh=Mesh()
         n=int(size/step)
         rows=[]
+        sample=self._sample
+        normal=self._normal
+        ground_color=self._ground_color
         for j in range(n+1):
             row=[]
             for i in range(n+1):
                 x,y=ox+i*step,oy+j*step
-                z=self._sample(x,y)
-                row.append(((x,y,z),self._normal(x,y),self._ground_color(x,y,z)))
+                z=sample(x,y)
+                row.append(((x,y,z),normal(x,y),ground_color(x,y,z)))
             rows.append(row)
             yield
         for j in range(n):
@@ -473,18 +496,21 @@ class WorldRenderer:
         ground=yield from mesh._node_steps("ground",node)
         ground.setTexture(self._ground_detail)
         rng=random.Random(_seed(self._seed_value,cx,cy))
+        planet=self.planet
+        height=self.height
+        water_level=planet["water_level"]
         remote=(cx%7==3 and cy%7==4 and abs(cx)+abs(cy)>4)
         rx,ry=(cx+.5)*CHUNK_SIZE,(cy+.5)*CHUNK_SIZE
-        remote=remote and self.height(rx,ry)>self.planet["water_level"]+1
+        remote=remote and height(rx,ry)>water_level+1
         def clearance(x,y,padding=0):
             return self._in_clearance(x,y,padding) or (remote and math.hypot(x-rx,y-ry)<14+padding)
         decor=Mesh()
         # Merged trees, grass, stones and ground leaves: two drawables per tile.
-        abundance=.6 if self.planet["biome"] in ("desert","volcanic","frozen") else 1.0
+        abundance=.6 if planet["biome"] in ("desert","volcanic","frozen") else 1.0
         for i in range(int(12*abundance)):
             x,y=(cx+rng.random())*CHUNK_SIZE,(cy+rng.random())*CHUNK_SIZE
-            z=self.height(x,y)
-            if clearance(x,y,1) or z<self.planet["water_level"]+.5:
+            z=height(x,y)
+            if clearance(x,y,1) or z<water_level+.5:
                 continue
             scale=rng.uniform(.75,1.8)
             if self._style=="mushroom":
@@ -496,14 +522,14 @@ class WorldRenderer:
             yield
         for i in range(int(34*abundance)):
             x,y=(cx+rng.random())*CHUNK_SIZE,(cy+rng.random())*CHUNK_SIZE
-            z=self.height(x,y)
-            if clearance(x,y) or z<self.planet["water_level"]:
+            z=height(x,y)
+            if clearance(x,y) or z<water_level:
                 continue
             decor.add(self._grass_models[i%3],(x,y,z),rng.uniform(.65,1.7),rng.uniform(0,360))
             yield
         for i in range(9):
             x,y=(cx+rng.random())*CHUNK_SIZE,(cy+rng.random())*CHUNK_SIZE
-            z=self.height(x,y)
+            z=height(x,y)
             if clearance(x,y):
                 continue
             scale,heading=rng.uniform(.4,1.7),rng.uniform(0,360)
@@ -515,30 +541,30 @@ class WorldRenderer:
         yield from decor._node_steps("batched-flora-and-stones",node,two_sided=True)
         self.collisions.set_group(collision_group,collision_shapes)
         yield
-        resources=self.planet["resources"]
+        resources=planet["resources"]
         for i in range(7):
             x,y=(cx+.13+rng.random()*.74)*CHUNK_SIZE,(cy+.13+rng.random()*.74)*CHUNK_SIZE
-            if clearance(x,y,2) or self.height(x,y)<self.planet["water_level"]+.3:
+            if clearance(x,y,2) or height(x,y)<water_level+.3:
                 continue
             resource=resources[rng.randrange(len(resources))]
             entity_id=f"{self.planet['id']}:c{cx},{cy}:r{i}"
             if self._resource(entity_id,resource,x,y,_seed(self._seed_value,cx,cy,i+1),node):
                 ids.append(entity_id)
             yield
-        if rng.random()<.34*float(self.planet.get("fauna_density",1)):
+        if rng.random()<.34*float(planet.get("fauna_density",1)):
             x,y=(cx+.5)*CHUNK_SIZE,(cy+.5)*CHUNK_SIZE
-            if not clearance(x,y,5) and self.height(x,y)>self.planet["water_level"]+1:
+            if not clearance(x,y,5) and height(x,y)>water_level+1:
                 entity_id=f"{self.planet['id']}:c{cx},{cy}:fauna"
                 self._make_fauna(entity_id,x,y,_seed(self._seed_value,cx,cy,49),node)
                 ids.append(entity_id)
                 yield
         if remote:
             kind="outpost" if _seed(self._seed_value,cx,cy)%3==0 else "ruin"
-            meshes=outpost_mesh(self.planet["accent"]) if kind=="outpost" else ruin_mesh(self.planet["accent"])
+            meshes=outpost_mesh(planet["accent"]) if kind=="outpost" else ruin_mesh(planet["accent"])
             landmark=NodePath("remote-"+kind)
             yield from meshes[0]._node_steps("structure",landmark,two_sided=True)
             yield from meshes[1]._node_steps("signal-lights",landmark,two_sided=True,unlit=True)
-            z=self.height(rx,ry)
+            z=height(rx,ry)
             landmark.setPos(rx,ry,z)
             landmark.reparentTo(node)
             landmark.setH((_seed(self._seed_value,cx,cy)%4)*90)
@@ -900,34 +926,42 @@ class WorldRenderer:
         if self.mode=="surface":
             self._stream(pos)
             self._make_far_terrain(pos)
+            sin=math.sin
+            cos=math.cos
             if self._water:
                 self._water.setPos(pos[0],pos[1],self.planet["water_level"])
-                self._ripples.setY(math.sin(elapsed*.055)*11)
-            for entity_id,data in list(self._fauna.items()):
-                entity=self._entities.get(entity_id)
+                self._ripples.setY(sin(elapsed*.055)*11)
+            entities=self._entities
+            height=self.height
+            degrees=math.degrees
+            px,py=pos[0],pos[1]
+            for entity_id,data in self._fauna.items():
+                entity=entities.get(entity_id)
                 if not entity:
                     continue
                 x0,y0=data["origin"]
-                if (x0-pos[0])**2+(y0-pos[1])**2>180**2:
+                if (x0-px)**2+(y0-py)**2>180**2:
                     continue
-                t=elapsed*.105+data["phase"]
-                x,y=x0+math.cos(t)*4.2,y0+math.sin(t)*3.5
-                hover=.9+math.sin(elapsed*1.4+data["phase"])*.28 if data["variant"]==1 else 0
-                z=self.height(x,y)+math.sin(elapsed*3+data["phase"])*.045+hover
-                entity["node"].setPos(x,y,z)
-                entity["node"].setH(-math.degrees(t))
-                entity["node"].setR(math.sin(elapsed*2.8+data["phase"])*1.5)
+                dphase=data["phase"]
+                t=elapsed*.105+dphase
+                x,y=x0+cos(t)*4.2,y0+sin(t)*3.5
+                hover=.9+sin(elapsed*1.4+dphase)*.28 if data["variant"]==1 else 0
+                z=height(x,y)+sin(elapsed*3+dphase)*.045+hover
+                node=entity["node"]
+                node.setPos(x,y,z)
+                node.setH(-degrees(t))
+                node.setR(sin(elapsed*2.8+dphase)*1.5)
             intensity=max(0,min(1,storm))
             if intensity>.01:
                 self._weather.show()
-                self._weather.setPos(pos[0]+math.sin(elapsed*.15)*7,pos[1],pos[2]-(elapsed*8)%16)
+                self._weather.setPos(pos[0]+sin(elapsed*.15)*7,pos[1],pos[2]-(elapsed*8)%16)
                 self._weather.setColorScale(1,1,1,intensity)
             else:
                 self._weather.hide()
             if elapsed-self._last_light>.2 or elapsed<self._last_light:
                 # Start in a generous morning; a full cycle is several minutes.
                 phase=elapsed/max(60,self.planet["day_length"])*math.tau+.78
-                altitude=math.sin(phase)
+                altitude=sin(phase)
                 daylight=max(.12,min(1,(altitude+.17)*1.15))
                 twilight=max(0,1-abs(altitude)*3.5)
                 storm_dark=1-intensity*.42

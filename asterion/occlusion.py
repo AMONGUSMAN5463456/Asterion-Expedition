@@ -110,6 +110,8 @@ class AmbientOcclusion:
         self.projection = None
         self.quads = []
         self.viewport_size = None
+        self.view_ray = None
+        self.depth_range = None
         self.closed = False
         try:
             color, depth, ao = (Texture(name) for name in ("ao-color", "ao-depth", "ao-shading"))
@@ -137,6 +139,8 @@ class AmbientOcclusion:
             raise
 
     def update(self):
+        if self.closed:
+            return
         try:
             scene, shading = self.manager.buffers
         except (ValueError, TypeError, AttributeError) as exc:
@@ -155,9 +159,13 @@ class AmbientOcclusion:
             self.projection = Mat4(projection)
             # Scale factors and planes come straight from the lens so the
             # shader never depends on a matrix layout.
-            for quad in self.quads:
-                quad.setShaderInput("view_ray", projection.getCell(0, 0), projection.getCell(2, 1))
-                quad.setShaderInput("depth_range", self.lens.getNear(), self.lens.getFar())
+            view_ray = (projection.getCell(0, 0), projection.getCell(2, 1))
+            depth_range = (self.lens.getNear(), self.lens.getFar())
+            if view_ray != self.view_ray or depth_range != self.depth_range:
+                self.view_ray, self.depth_range = view_ray, depth_range
+                for quad in self.quads:
+                    quad.setShaderInput("view_ray", *view_ray)
+                    quad.setShaderInput("depth_range", *depth_range)
 
     def cleanup(self):
         if self.closed:
