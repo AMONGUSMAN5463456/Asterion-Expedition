@@ -150,15 +150,19 @@ class Mesh:
         if isinstance(scale, (int, float)):
             scale = (scale,)*3
         ca, sa = math.cos(math.radians(heading)), math.sin(math.radians(heading))
+        sx, sy, sz = scale
+        px, py, pz = pos
+        nsx, nsy, nsz = max(abs(sx), 1e-9), max(abs(sy), 1e-9), max(abs(sz), 1e-9)
+        normal = Vec3()
         if other.texcoords and not self.texcoords:
             self.texcoords.extend(((0,0),)*len(self.vertices))
         if self.texcoords or other.texcoords:
             self.texcoords.extend(other.texcoords or ((0,0),)*len(other.vertices))
         for p, n, color in zip(other.vertices, other.normals, other.colors):
-            x, y, z = (p[i]*scale[i] for i in range(3))
-            self.vertices.append((pos[0]+x*ca-y*sa, pos[1]+x*sa+y*ca, pos[2]+z))
-            nx, ny, nz = (n[i]/max(abs(scale[i]),1e-9) for i in range(3))
-            normal = Vec3(nx*ca-ny*sa, nx*sa+ny*ca, nz)
+            x, y, z = p[0]*sx, p[1]*sy, p[2]*sz
+            self.vertices.append((px+x*ca-y*sa, py+x*sa+y*ca, pz+z))
+            nx, ny, nz = n[0]/nsx, n[1]/nsy, n[2]/nsz
+            normal.set(nx*ca-ny*sa, nx*sa+ny*ca, nz)
             normal.normalize()
             self.normals.append(tuple(normal))
             self.colors.append(color)

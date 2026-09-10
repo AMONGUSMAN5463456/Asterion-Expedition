@@ -153,6 +153,7 @@ class GameUI:
         self.height = 900.0
         self._hud_labels = {}
         self._vital_bars = {}
+        self._measurements = {}
         parent = getattr(app, "aspect2d", None)
         self._available = isinstance(parent, NodePath) and not parent.isEmpty()
         if not self._available:
@@ -254,16 +255,25 @@ class GameUI:
         return label
 
     def _measure(self, text, size=18, bold=False, width=None):
-        node = TextNode("asterion-measure")
         font = self.bold_font if bold else self.font
+        text = self._clean(text)
+        key = (text, size, font, width)
+        cached = self._measurements.get(key)
+        if cached is not None:
+            return cached
+        node = TextNode("asterion-measure")
         if font is not None:
             node.setFont(font)
-        text = self._clean(text)
         if width is not None:
             node.setWordwrap(max(1.0, width / size))
         node.setText(text)
         rows = max(1, node.getNumRows())
-        return node.getWidth() * size, rows * size * 1.24
+        result = node.getWidth() * size, rows * size * 1.24
+        # Bound changing coordinates, notices, and menu text over long sessions.
+        if len(self._measurements) >= 1024:
+            self._measurements.clear()
+        self._measurements[key] = result
+        return result
 
     def _short(self, value, width, size, bold=False):
         text = self._clean(value).replace("\n", " ")
@@ -1068,6 +1078,7 @@ class GameUI:
             return
         self._events.ignoreAll()
         self._clear_menu()
+        self._measurements.clear()
         if self.root is not None:
             self.root.removeNode()
         self._destroyed = True

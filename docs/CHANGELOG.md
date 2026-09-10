@@ -1,5 +1,12 @@
 # Unreleased
 
+## Performance
+
+- Cached repeated HUD and menu text measurements, bounded to 1,024 entries per
+  interface, without changing fonts, wrapping, update frequency, or graphics quality.
+- Reduced procedural mesh-transform overhead during chunk streaming by hoisting
+  scale calculations and reusing a normal vector, preserving generated geometry.
+
 ## Graphics
 
 - Added optional screen-space ambient occlusion for surface contact shading,

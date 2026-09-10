@@ -60,6 +60,34 @@ normal rendering active and marks the setting unavailable for that session.
 As a screen-space effect, AO cannot shade against geometry outside the camera
 view or hidden behind the visible depth layer.
 
+## HUD text layout
+
+Text measurements are cached per interface by cleaned text, font, size, and
+wrapping width. The cache clears at 1,024 entries and on interface destruction,
+so changing telemetry cannot grow it indefinitely. HUD update frequency and
+layout remain unchanged.
+
+A 600-frame stationary surface profile (Python 3.14, headless GL) reduced
+Python update time from 1.349 to 0.888 seconds, with HUD updates falling from
+0.558 to 0.100 seconds. This is a CPU-side improvement, not an FPS guarantee:
+the separate 640×360 rendered-frame sample remained approximately 36 ms/frame.
+Cached and uncached 1280×720 HUD captures were pixel-identical.
+
+## Streaming mesh transforms
+
+`Mesh.add` calculates scale-dependent normal divisors once per mesh placement,
+uses direct component arithmetic instead of per-vertex generators, and reuses
+one temporary Panda3D normal vector. Vertex order, transforms, normal
+normalization, colours, UV padding, and chunk scheduling are unchanged.
+
+On Python 3.14, five unprofiled batches of 100 representative flora, rock, and
+crystal transforms had median times of 279 ms before and 137 ms after. Across
+36 placements, including non-uniform, negative, and zero scales, all generated
+vertices, normals, colours, and UVs exactly matched the previous implementation.
+A 240-frame headless surface traversal generating 35 chunks reduced profiled
+chunk-generation time from 7.89 to 4.83 seconds. These CPU measurements include
+no GPU performance claim; synchronous chunk generation can still cause hitches.
+
 ## Useful commands
 
 Run these from the extracted project directory. On Windows use `py -3` instead
