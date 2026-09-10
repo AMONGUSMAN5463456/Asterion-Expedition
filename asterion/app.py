@@ -94,6 +94,15 @@ class ExpeditionApp(ShowBase):
         self._beam_child = None
         self.mine_time = 0.0
         self.mine_id = ""
+        self._beam_endpoints = None
+        self._target_scan_pos = None
+        self._target_scan_fwd = None
+        self._target_scan_mode = None
+        self._target_scan_range = None
+        self._objective_cache_key = None
+        self._objective_cache = None
+        self._waypoint_cache_key = None
+        self._waypoint_cache = None
         self.target = None
         self.target_distance = 0.0
         self.nearby = None
@@ -322,6 +331,36 @@ class ExpeditionApp(ShowBase):
         self.world.update(0, self.controller.position, self.game.elapsed, 0)
         self._apply_ambient_occlusion()
 
+    def _load_flight(self, position=None):
+        """Restore a saved airborne flight above the saved planet, in place."""
+        self.system = generate_system(self.game.system_id)
+        index = self.game.planet_index
+        try:
+            index = int(index)
+        except (TypeError, ValueError, OverflowError):
+            index = 0
+        self.game.planet_index = max(0, min(index, len(self.system["planets"]) - 1))
+        self.planet = self.system["planets"][self.game.planet_index]
+        self._remove_ship()
+        self.world.load_surface(self.planet, self.game)
+        self.controller.set_collision_world(self.world.collisions)
+        self.game.mode = "flight"
+        self._apply_ambient_occlusion()
+        try:
+            pos = [float(position[i]) for i in range(3)]
+        except (TypeError, IndexError, ValueError, OverflowError):
+            pos = []
+        if len(pos) != 3 or not all(math.isfinite(v) for v in pos):
+            pos = [0, 0, self.world.height(0, 0) + 300]
+        pos[2] = max(pos[2], self.world.height(pos[0], pos[1]) + 4.0)
+        heading = self.game.heading if math.isfinite(self.game.heading) else 0
+        pitch = self.game.pitch if math.isfinite(self.game.pitch) else 0
+        self.controller.set_mode("flight", pos, heading, pitch)
+        self.mine_time = 0
+        self.target = None
+        self.navigation = None
+        self.world.update(0, self.controller.position, self.game.elapsed, 0)
+
     def new_game(self):
         preferences = dict(self.game.settings)
         self.game = GameState()
@@ -343,6 +382,8 @@ class ExpeditionApp(ShowBase):
         if self.game.mode == "orbit":
             position = list(self.game.position)
             self.enter_orbit(position=position, restoring=True)
+        elif self.game.mode == "flight":
+            self._load_flight(list(self.game.position))
         else:
             self._load_surface(fresh=False)
         self.audio.set_volume(0 if self.no_audio else self.game.settings.get("volume", .45))
@@ -353,12 +394,10 @@ class ExpeditionApp(ShowBase):
         self.game.position = [float(v) for v in self.controller.position]
         self.game.heading = float(self.controller.heading)
         self.game.pitch = float(self.controller.pitch)
-        # Surface flight resumes safely beside the ship after loading.
-        self.game.mode = "orbit" if self.controller.mode == "orbit" else "surface"
-        if self.controller.mode == "flight":
-            x, y = self.controller.position.x, self.controller.position.y
-            self.game.ship_position = [x, y, self.world.height(x, y)]
-            self.game.position = [x + 10, y, self.world.height(x + 10, y) + 1.8]
+        # Mode mapping: orbit and flight both resume in place. Flight keeps
+        # its airborne position so a save at altitude does not collapse to a
+        # foot spawn beside the ship; ship_position stays at its last parking.
+        self.game.mode = self.controller.mode
 
     def save_game(self, announce=True):
         if not self.started:
@@ -440,9 +479,9 @@ class ExpeditionApp(ShowBase):
         self.controller.set_mode("flight", pos, self.controller.heading, 8)
         self.game.vitals["fuel"] = max(0, self.game.vitals["fuel"] - 2 / (1 + .25 * self.game.upgrades.get("engine", 0)))
         self.game.record("launched")
-        self.toast("Launch complete. W thrust | Mouse steer | Space climb | Reach 420 m for orbit.", "launch", 8)
+        self.toast("Launch complete. W thrust | Mouse steer | Space climb | Pass 420 m for orbital insertion.", "launch", 8)
 
-    def enter_orbit(self, position=None, restoring=False):
+    def enter_orbit(self, position=None, heading=None, pitch=None, velocity=None, speed=None, restoring=False):
         self._remove_ship()
         self.system = generate_system(self.game.system_id)
         self.planet = self.system["planets"][self.game.planet_index]
@@ -454,11 +493,26 @@ class ExpeditionApp(ShowBase):
         self.controller.set_collision_world(self.world.collisions)
         self.game.mode = "orbit"
         self._apply_ambient_occlusion()
+        if heading is None:
+            heading = self.game.heading if restoring else self.controller.heading
+        if pitch is None:
+            pitch = self.game.pitch if restoring else self.controller.pitch
+        if not math.isfinite(heading):
+            heading = 0
+        if not math.isfinite(pitch):
+            pitch = 0
         if position is None:
+            # Orbit and surface scenes use separate coordinates, so the spawn
+            # is relative to the departure planet along the travel heading
+            # instead of a fixed point behind it. The 850 m offset clears the
+            # atmosphere margin so _constrain_orbit does not snap the arrival.
             center = Vec3(*self.planet["position"])
-            position = center + Vec3(0, -self.planet["size"] - 850, self.planet["size"] * .18)
-        self.controller.set_mode("orbit", position, self.game.heading if restoring else 0,
-                                 self.game.pitch if restoring else 0)
+            travel = Vec3(-math.sin(math.radians(heading)), math.cos(math.radians(heading)), 0)
+            if travel.lengthSquared() < 1e-6:
+                travel = Vec3(0, -1, 0)
+            travel.normalize()
+            position = center + travel * (self.planet["size"] + 850) + Vec3(0, 0, self.planet["size"] * .18)
+        self.controller.set_mode("orbit", position, heading, pitch, velocity=velocity, speed=speed)
         self._constrain_orbit()
         self.autopilot = None
         self.target = None
@@ -467,16 +521,58 @@ class ExpeditionApp(ShowBase):
         if not restoring:
             self.toast(f"{self.system['name']} // orbital flight. M opens navigation. E docks near a station.", "discover", 8)
 
-    def land_on_planet(self, planet_index):
-        self.game.planet_index = int(planet_index)
-        self._load_surface(fresh=True)
+    def enter_atmosphere(self, planet_index):
+        """Atmospheric entry: arrive in flight at altitude, then land manually."""
+        try:
+            index = int(planet_index)
+        except (TypeError, ValueError, OverflowError):
+            return
+        heading = self.controller.heading if math.isfinite(self.controller.heading) else 0
+        pitch = self.controller.pitch if math.isfinite(self.controller.pitch) else 0
+        try:
+            entry_speed = float(self.controller.speed)
+        except (TypeError, ValueError, OverflowError):
+            entry_speed = 45.0
+        if not math.isfinite(entry_speed):
+            entry_speed = 45.0
+        entry_speed = min(max(entry_speed, 30.0), 65.0)
+        self.game.planet_index = max(0, min(index, len(generate_system(self.game.system_id)["planets"]) - 1))
+        self._remove_ship()
+        self.system = generate_system(self.game.system_id)
+        self.planet = self.system["planets"][self.game.planet_index]
+        self.world.load_surface(self.planet, self.game)
+        self.controller.set_collision_world(self.world.collisions)
+        self.game.mode = "flight"
+        self._apply_ambient_occlusion()
+        # Orbit and surface scenes use separate coordinates, so entry targets
+        # a clear site near the survey origin at ~300 m with entry velocity
+        # along the approach attitude. Altitude alone keeps a site-less
+        # fallback safe; touchdown still happens via flight F landing.
+        site = self._find_landing_site(0, 0)
+        sx, sy = site if site is not None else (0, 0)
+        pos = [sx, sy, self.world.height(sx, sy) + 300]
+        radians_h, radians_p = math.radians(heading), math.radians(pitch)
+        forward = Vec3(-math.sin(radians_h) * math.cos(radians_p),
+                       math.cos(radians_h) * math.cos(radians_p), math.sin(radians_p))
+        self.controller.set_mode("flight", pos, heading, pitch, velocity=forward * entry_speed)
         self.game.visit(self.planet)
         self.autopilot = None
-        self.toast(f"Touchdown on {self.planet['name']}. {self.planet['description']}", "land", 8)
+        self.target = None
+        self.navigation = None
+        self.mine_time = 0
+        self.world.update(0, self.controller.position, self.game.elapsed, 0)
+        self.game.vitals["fuel"] = max(0.0, float(self.game.vitals.get("fuel", 100)) - 1.0)
+        self.toast(f"Atmospheric entry // {self.planet['name']}. W thrust S brake Space climb Ctrl descend. Below 65 m and 48 m/s, F lands.", "land", 8)
         self.save_game(announce=False)
+
+    def land_on_planet(self, planet_index):
+        """Landfall arrives as atmospheric entry; touchdown happens via flight F."""
+        self.enter_atmosphere(planet_index)
 
     def flight_action(self):
         if not self.playing:
+            return
+        if self.transition:
             return
         mode = self.controller.mode
         if mode == "surface":
@@ -493,10 +589,14 @@ class ExpeditionApp(ShowBase):
                     return
                 self.transition_to(lambda: self._load_surface(landing=landing), "Landing approach confirmed")
         else:
+            if self.autopilot:
+                self.toast("Automatic approach active. E cancels the approach first.")
+                return
             nearest = min(self.system["planets"], key=lambda p: distance(p["position"], self.controller.position) - p["size"])
             gap = distance(nearest["position"], self.controller.position) - nearest["size"]
             if gap < 1600:
-                self.transition_to(lambda: self.land_on_planet(nearest["index"]), f"Entering {nearest['name']} atmosphere")
+                index = nearest["index"]
+                self.transition_to(lambda index=index: self.land_on_planet(index), f"Entering {nearest['name']} atmosphere")
             else:
                 self.toast("Approach a planet, then press F. M can set an automatic approach.")
 
@@ -539,6 +639,37 @@ class ExpeditionApp(ShowBase):
                     return False
         return True
 
+    def _scan_params(self):
+        mode = self.controller.mode
+        orbit = mode == "orbit"
+        scan_range = 100 * (1 + self.game.upgrades.get("scanner", 0) * .4)
+        max_range = 1100 if orbit else (scan_range if self.scanner_time else 38)
+        return mode, orbit, max_range
+
+    def _maybe_find_target(self, dt):
+        """Per-step target refresh: full scan on the 20Hz HUD gate, on a real
+        move/turn, or when the scan range changes; otherwise keep the cached
+        best target and refresh only its distance."""
+        mode, _orbit, max_range = self._scan_params()
+        p = self.controller.position
+        forward = self.controller.forward()
+        last_p = self._target_scan_pos
+        hud_fire = self.hud_time + max(0.0, float(dt)) >= 1 / 20
+        if not hud_fire and last_p is not None and self._target_scan_mode == mode and self._target_scan_range == max_range:
+            last_f = self._target_scan_fwd
+            moved_sq = (p.x - last_p.x) ** 2 + (p.y - last_p.y) ** 2 + (p.z - last_p.z) ** 2
+            turned_sq = ((forward.x - last_f.x) ** 2 + (forward.y - last_f.y) ** 2 + (forward.z - last_f.z) ** 2) if last_f is not None else 1
+            if moved_sq <= .09 and turned_sq <= .0004:
+                target = self.target
+                if target is not None:
+                    bpos = target["pos"]
+                    dx, dy, dz = bpos[0] - p.x, bpos[1] - p.y, bpos[2] - p.z
+                    self.target_distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+                else:
+                    self.target_distance = 0
+                return
+        self._find_target()
+
     def _find_target(self):
         controller = self.controller
         p = controller.position
@@ -549,29 +680,48 @@ class ExpeditionApp(ShowBase):
         best_score = 1e9
         nearby = None
         nearby_dist = 1e9
-        mode = controller.mode
-        orbit = mode == "orbit"
-        scan_range = 100 * (1 + self.game.upgrades.get("scanner", 0) * .4)
-        max_range = 1100 if orbit else (scan_range if self.scanner_time else 38)
+        mode, orbit, max_range = self._scan_params()
+        max_range_sq = max_range * max_range
+        # Unlifted pre-filter margins: non-orbit targets are lifted by at most 4 m.
+        # Stations stay acquirable as nearby sites out to 650 m, past target range.
+        margin = 0.0 if orbit else 4.0
+        rough_target_sq = (max_range + margin) ** 2
+        rough_nearby_sq = (650 + margin) ** 2
+        site_kinds = ("outpost", "ruin", "beacon", "station", "habitat", "extractor", "solar")
         for entity in self.world.interactables():
             pos = entity["pos"]
             ex, ey, ez = pos[0], pos[1], pos[2]
+            dx, dy, dz = ex - px, ey - py, ez - pz
+            dist_u_sq = dx * dx + dy * dy + dz * dz
+            if dist_u_sq > rough_target_sq and dist_u_sq > rough_nearby_sq:
+                continue
             radius = float(entity.get("radius", 2))
             if not orbit:
                 ez += radius * .6 if radius * .6 < 4 else 4
             dx, dy, dz = ex - px, ey - py, ez - pz
-            length = math.sqrt(dx * dx + dy * dy + dz * dz)
+            dist_sq = dx * dx + dy * dy + dz * dz
+            if dist_sq > max_range_sq:
+                # Nearby sites use the same lifted range as targeting.
+                if dist_sq < 650 * 650:
+                    kind = entity["kind"]
+                    if kind in site_kinds:
+                        length = math.sqrt(dist_sq)
+                        interaction_range = 650 if kind == "station" else 18
+                        if length < interaction_range and length < nearby_dist:
+                            nearby, nearby_dist = entity, length
+                continue
+            length = math.sqrt(dist_sq)
             kind = entity["kind"]
-            if kind in ("outpost", "ruin", "beacon", "station", "habitat", "extractor", "solar"):
+            if kind in site_kinds:
                 interaction_range = 650 if kind == "station" else 18
                 if length < interaction_range and length < nearby_dist:
                     nearby, nearby_dist = entity, length
-            if length > max_range or length < .01:
+            if length < .01:
                 continue
             along = (dx * fx + dy * fy + dz * fz)
             if along <= 0:
                 continue
-            side_sq = dx * dx + dy * dy + dz * dz - along * along
+            side_sq = dist_sq - along * along
             if side_sq < 0:
                 side_sq = 0
             tolerance = radius if radius > length * .035 else length * .035
@@ -589,6 +739,10 @@ class ExpeditionApp(ShowBase):
         else:
             self.target_distance = 0
         self.nearby = nearby
+        self._target_scan_pos = Vec3(p)
+        self._target_scan_fwd = Vec3(forward)
+        self._target_scan_mode = mode
+        self._target_scan_range = max_range
     def scan(self):
         if not self.playing:
             return
@@ -695,19 +849,26 @@ class ExpeditionApp(ShowBase):
         sx, sy, sz = pos.x + fwd.x * .8 + .18, pos.y + fwd.y * .8, pos.z + fwd.z * .8 - .2
         epos = entity["pos"]
         ex, ey, ez = epos[0], epos[1], epos[2] + min(entity.get("radius", 2) * .5, 3)
-        line = LineSegs("mining-beam")
-        line.setThickness(3)
-        line.setColor(.15, .95, 1, 1)
-        line.moveTo(sx, sy, sz)
-        line.drawTo(ex, ey, ez)
-        if self.beam is None:
-            self.beam = self.render.attachNewNode("mining-beam")
-            self.beam.setLightOff()
-            self.beam.setFogOff()
-        else:
-            for child in self.beam.getChildren():
-                child.removeNode()
-        self.beam.attachNewNode(line.create())
+        endpoints = (sx, sy, sz, ex, ey, ez)
+        previous_endpoints = self._beam_endpoints
+        moved = True
+        if previous_endpoints is not None:
+            moved = any(abs(a - b) > 1e-4 for a, b in zip(endpoints, previous_endpoints))
+        if moved:
+            if self.beam is None:
+                self.beam = self.render.attachNewNode("mining-beam")
+                self.beam.setLightOff()
+                self.beam.setFogOff()
+            elif self._beam_child is not None:
+                self._beam_child.removeNode()
+                self._beam_child = None
+            line = LineSegs("mining-beam")
+            line.setThickness(3)
+            line.setColor(.15, .95, 1, 1)
+            line.moveTo(sx, sy, sz)
+            line.drawTo(ex, ey, ez)
+            self._beam_child = self.beam.attachNewNode(line.create())
+            self._beam_endpoints = endpoints
         duration = max(.25, float(entity.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35))
         previous = self.mine_time
         self.mine_time += dt
@@ -736,6 +897,7 @@ class ExpeditionApp(ShowBase):
             self.beam.removeNode()
             self.beam = None
             self._beam_child = None
+            self._beam_endpoints = None
 
     def _survival(self, dt):
         v = self.game.vitals
@@ -769,7 +931,10 @@ class ExpeditionApp(ShowBase):
 
     def _constrain_orbit(self):
         """Recover saved positions and keep camera/velocity in sync at boundaries."""
-        p = self.controller.position
+        old = Vec3(self.controller.position)
+        p = Vec3(old)
+        push_normal = None
+        max_push = 0.0
         for planet in self.system["planets"]:
             center = Vec3(*planet["position"])
             delta = p - center
@@ -777,14 +942,50 @@ class ExpeditionApp(ShowBase):
                 if delta.length() < .01:
                     delta = Vec3(0, -1, 0)
                 delta.normalize()
+                max_push = max(max_push, planet["size"] + 110 - (p - center).length())
                 p = center + delta * (planet["size"] + 110)
+                push_normal = Vec3(delta)
         result = self.world.collisions.move_sphere(p, Vec3(0), radius=3)
-        changed = (result.position - self.controller.position).length() > .001
+        collision_disp = (result.position - p).length()
+        total_disp = (result.position - old).length()
         self.controller.position = result.position
-        if changed:
+        if total_disp <= .001:
+            return
+        self.camera.setPos(result.position)
+        if collision_disp > 1.0 or max_push > 60:
+            # Deep penetration: stop dead as before.
             self.controller.velocity = Vec3(0)
             self.controller.speed = 0
-            self.camera.setPos(result.position)
+            return
+        if total_disp <= .01:
+            # Resting contact nudge: positional only, so a parked graze does
+            # not jitter from repeated velocity resets.
+            return
+        outward = push_normal
+        if outward is None:
+            nearest = None
+            nearest_dist = 1e9
+            for planet in self.system["planets"]:
+                dist = (result.position - Vec3(*planet["position"])).length()
+                if dist < nearest_dist:
+                    nearest, nearest_dist = planet, dist
+            if nearest is not None and nearest_dist < nearest["size"] + 250:
+                outward = result.position - Vec3(*nearest["position"])
+                if outward.length() < .01:
+                    outward = Vec3(0, 0, 1)
+                outward.normalize()
+        if outward is None:
+            self.controller.velocity = Vec3(0)
+            self.controller.speed = 0
+            return
+        # Graze: remove only the into-planet radial component so tangential
+        # drift continues instead of stalling against the body.
+        velocity = Vec3(self.controller.velocity)
+        inward = velocity.dot(outward)
+        if inward < 0:
+            velocity -= outward * inward
+        self.controller.velocity = velocity
+        self.controller.speed = velocity.length()
 
     def _plan_approach(self, destination):
         obstacles = [{"id": p["id"], "center": p["position"], "radius": p["size"] + 90}
@@ -906,13 +1107,17 @@ class ExpeditionApp(ShowBase):
                                        self.game.upgrades, self.game.settings, enabled=True,
                                        gravity=self.planet.get("gravity", 12))
             self.world.update(dt, controller.position, self.game.elapsed, self.storm)
-            self._find_target()
+            self._maybe_find_target(dt)
             self._mine(dt)
             self._survival(dt)
             if controller.mode == "flight":
                 p = controller.position
                 if p.z - self.world.height(p.x, p.y) >= 420 and not self.transition:
-                    self.transition_to(self.enter_orbit, "Leaving atmosphere // orbital insertion")
+                    heading, pitch, velocity = controller.heading, controller.pitch, Vec3(controller.velocity)
+                    self.transition_to(
+                        lambda heading=heading, pitch=pitch, velocity=velocity: self.enter_orbit(
+                            heading=heading, pitch=pitch, velocity=velocity),
+                        "Leaving atmosphere // orbital insertion")
             elif controller.mode == "orbit" and not self.autopilot:
                 self._constrain_orbit()
             if self.autosave_time >= 60:
@@ -969,9 +1174,9 @@ class ExpeditionApp(ShowBase):
         elif self.nearby:
             prompt = f"E interact with {self.nearby['name']}"
         if mode == "flight":
-            prompt = "W thrust  S brake  Space ascend  Ctrl descend  Shift boost  F land"
+            prompt = "W thrust  S brake  Space climb  Ctrl descend  Shift boost  F land  |  420 m reaches orbit"
         if mode == "orbit":
-            prompt = "M navigation  F enter nearby planet  E dock  Shift boost  LMB mine asteroids"
+            prompt = "M navigation  F atmospheric entry  E dock  Shift boost  LMB mine asteroids"
         if self.autopilot:
             name = f"APPROACH // {self.autopilot['name']}"
             prompt = "E cancels automatic approach"
@@ -980,15 +1185,28 @@ class ExpeditionApp(ShowBase):
             npos = navigation["pos"]
             dx, dy, dz = npos[0] - px, npos[1] - py, npos[2] - pz
             name = f"{navigation['name']}  /  {math.sqrt(dx * dx + dy * dy + dz * dz):.0f} m"
-        objective = self.game.objective()
         if navigation:
             npos = navigation["pos"]
             dx, dy, dz = npos[0] - px, npos[1] - py, npos[2] - pz
             dist = math.sqrt(dx * dx + dy * dy + dz * dz)
             bearing = math.degrees(math.atan2(-dx, dy)) % 360
-            objective = {"title": "WAYPOINT // " + navigation["name"],
-                         "description": f"{dist:.0f} m away. Bearing {bearing:.0f} deg. M selects another location.",
-                         "progress": "Surface navigation"}
+            waypoint_key = (navigation.get("name"), int(dist), int(bearing))
+            if waypoint_key == self._waypoint_cache_key and self._waypoint_cache is not None:
+                objective = self._waypoint_cache
+            else:
+                objective = {"title": "WAYPOINT // " + navigation["name"],
+                             "description": f"{dist:.0f} m away. Bearing {bearing:.0f} deg. M selects another location.",
+                             "progress": "Surface navigation"}
+                self._waypoint_cache_key = waypoint_key
+                self._waypoint_cache = objective
+        else:
+            objective = self.game.objective()
+            objective_key = (objective.get("title"), objective.get("progress"))
+            if objective_key == self._objective_cache_key and self._objective_cache is not None:
+                objective = self._objective_cache
+            else:
+                self._objective_cache_key = objective_key
+                self._objective_cache = objective
         duration = max(.25, float(target.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35)) if target else 1
         return {"mode": mode, "location": self.system["name"] if mode == "orbit" else self.planet["name"],
                 "biome": "INTERPLANETARY SPACE" if mode == "orbit" else self.planet["biome"].upper(),
@@ -1204,7 +1422,7 @@ class ExpeditionApp(ShowBase):
                 {"title": "01 / Start with a survey", "body": "Walk with WASD; look with the mouse or arrow keys. Shift sprints. Tap Space to jump; hold to engage the jetpack. Ctrl brakes in the air, and Space + Ctrl hovers. C surveys; hold left mouse to extract a visible deposit.", "meta": "C scan  |  LMB mine  |  Shift sprint", "buttons": []},
                 {"title": "02 / Supplies and equipment", "body": "I or Tab opens cargo. K opens the fabricator. Craft Launch Cells from carbon and ferrite; Fold Cells from copper, crystal, and carbon. R uses suitable supplies to recharge a depleted reserve.", "meta": "I cargo  |  K crafting  |  R recharge", "buttons": []},
                 {"title": "03 / Take to the sky", "body": "Approach the ship and press E or F. W adds thrust; S brakes. Mouse or arrow keys steer. Space climbs, Ctrl descends, Shift boosts. Climb to 420 m above the terrain to enter orbit. Press X on foot to recall your ship.", "meta": "E / F launch  |  X recall  |  Space climb", "buttons": []},
-                {"title": "04 / Find another world", "body": "In orbit, M opens the chart. Select APPROACH & LAND to fly automatically to a planet, or approach manually and press F near the atmosphere. Choose GALAXY to spend a Fold Cell traveling to another system. E cancels automatic approach.", "meta": "M navigation  |  F atmospheric entry", "buttons": []},
+                {"title": "04 / Find another world", "body": "In orbit, M opens the chart. Select APPROACH & LAND to fly automatically to a planet, or approach manually and press F for atmospheric entry. Entry leaves you in flight at altitude: slow down, descend, and land with F. Choose GALAXY to spend a Fold Cell traveling to another system. E cancels automatic approach.", "meta": "M navigation  |  F atmospheric entry", "buttons": []},
                 {"title": "05 / Land, trade, investigate", "body": "In atmospheric flight, slow below 48 m/s and descend below 65 m, then F lands. E interacts with nearby outposts, signal ruins, or stations. Markets buy and sell supplies, and the journal tracks your expedition and contracts.", "meta": "E interact  |  J expedition log", "buttons": []},
                 {"title": "06 / Make a place to return to", "body": "B opens construction. Buildings are placed 12 m ahead. Move between builds to arrange your outpost. Habitats provide shelter; extractors and gardens accumulate materials. Collect their output from the construction panel.", "meta": "B construction  |  M surface waypoints", "buttons": []},
                 {"title": "07 / A resilient expedition", "body": "Shelter near your ship or an outpost restores oxygen and climate protection. Esc offers emergency rescue if supplies run out. Menus pause time. Automatic saves occur every minute; F5 saves and F9 opens reload confirmation.", "meta": "Esc pause / rescue  |  F5 save  |  F9 reload", "buttons": []},

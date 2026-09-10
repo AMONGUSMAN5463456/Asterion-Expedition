@@ -328,8 +328,23 @@ class NativeIntegrationTests(unittest.TestCase):
         self.app.controller.position = Vec3(154, -89, 300)
         self.assertTrue(self.app.save_game(False))
         self.app.continue_game()
-        self.assertEqual(self.app.controller.mode, "surface")
+        # Flight resumes airborne in place instead of collapsing to a foot
+        # spawn beside the ship, so altitude survives the reload.
+        self.assertEqual(self.app.controller.mode, "flight")
         self.assert_position_safe()
+        saved = Vec3(self.app.controller.position)
+        self.assertGreater(saved.z, 65)
+        self.assertGreaterEqual(saved.z, self.app.world.height(saved.x, saved.y) + 4.0)
+        # Manual landing still parks the ship beside the touchdown site.
+        site = self.app._find_landing_site(saved.x, saved.y) or self.app._find_landing_site(0, 0)
+        self.assertIsNotNone(site)
+        self.app.controller.set_mode("flight", [site[0], site[1], self.app.world.height(*site) + 10],
+                                      self.app.controller.heading, -10)
+        self.app.controller.velocity = Vec3(0)
+        self.app.controller.speed = 0.0
+        self.app.flight_action()
+        self.advance_until(lambda: self.app.transition is None)
+        self.assertEqual(self.app.controller.mode, "surface")
         self.assertIsNotNone(self.app.ship)
         self.assertLess(distance(self.app.controller.position, self.app.game.ship_position), 22)
         self.app.flight_action()
@@ -350,10 +365,24 @@ class NativeIntegrationTests(unittest.TestCase):
         orbit_root = self.app.world.root
         self.app.flight_action()
         self.advance_until(lambda: self.app.transition is None)
-        self.assertEqual(self.app.controller.mode, "surface")
+        # Orbit F is atmospheric entry now: flight at altitude, then F lands.
+        self.assertEqual(self.app.controller.mode, "flight")
         self.assertTrue(orbit_root.isEmpty())
         self.assertEqual(self.app.render.findAllMatches("**/asterion-surface").getNumPaths(), 1)
         self.assertEqual(self.app.render.findAllMatches("**/asterion-orbit").getNumPaths(), 0)
+        entry = self.app.controller.position
+        entry_alt = entry.z - self.app.world.height(entry.x, entry.y)
+        self.assertGreaterEqual(entry_alt, 250)
+        self.assertLessEqual(entry_alt, 350)
+        site = self.app._find_landing_site(entry.x, entry.y) or self.app._find_landing_site(0, 0)
+        self.assertIsNotNone(site)
+        self.app.controller.set_mode("flight", [site[0], site[1], self.app.world.height(*site) + 10],
+                                      self.app.controller.heading, -10)
+        self.app.controller.velocity = Vec3(0)
+        self.app.controller.speed = 0.0
+        self.app.flight_action()
+        self.advance_until(lambda: self.app.transition is None)
+        self.assertEqual(self.app.controller.mode, "surface")
         self.assertIsNotNone(self.app.ship)
         self.assert_position_safe()
 
@@ -363,14 +392,26 @@ class NativeIntegrationTests(unittest.TestCase):
         self.press(next(button for button in self.buttons(model, "travel") if button["payload"] == 1))
         self.assertIsNotNone(self.app.autopilot)
         self.assertTrue(self.app.playing)
-        self.advance_until(lambda: self.app.controller.mode == "surface" and self.app.transition is None)
+        self.advance_until(lambda: self.app.controller.mode == "flight" and self.app.transition is None)
         self.assertEqual(self.app.game.planet_index, 1)
         self.assertIn("s0-p1", self.app.game.visited)
         self.assertIsNone(self.app.autopilot)
         self.assert_position_safe()
         restored = GameState.load(self.app.save_path)
         self.assertEqual(restored.planet_index, 1)
-        self.assertEqual(restored.mode, "surface")
+        self.assertEqual(restored.mode, "flight")
+        # The pilot then lands manually via the existing flight F path.
+        entry = self.app.controller.position
+        site = self.app._find_landing_site(entry.x, entry.y) or self.app._find_landing_site(0, 0)
+        self.assertIsNotNone(site)
+        self.app.controller.set_mode("flight", [site[0], site[1], self.app.world.height(*site) + 10],
+                                      self.app.controller.heading, -10)
+        self.app.controller.velocity = Vec3(0)
+        self.app.controller.speed = 0.0
+        self.app.flight_action()
+        self.advance_until(lambda: self.app.transition is None)
+        self.assertEqual(self.app.controller.mode, "surface")
+        self.assert_position_safe()
 
     def test_station_approach_pauses_cancels_and_opens_a_real_market(self):
         self.app.enter_orbit()

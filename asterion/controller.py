@@ -205,17 +205,27 @@ class PlayerController(DirectObject):
         self.collision_ids = ()
         self.collision_feedback = 0.0
 
-    def set_mode(self, mode, position, heading=0, pitch=0):
+    def set_mode(self, mode, position, heading=0, pitch=0, velocity=None, speed=None):
         if mode not in ("surface", "flight", "orbit"):
             raise ValueError("Controller mode must be surface, flight, or orbit")
         self.mode = mode
         fallback = (0, 0, EYE_HEIGHT if mode == "surface" else SHIP_CLEARANCE)
         self.position = _vector(position, fallback)
         self._last_valid_position = Vec3(self.position)
-        self.velocity = Vec3(0)
         self.heading = _number(heading) % 360.0
         self.pitch = _number(pitch, 0, -85.0, 85.0)
-        self.speed = 0.0
+        if velocity is not None:
+            # Transition carry-over (orbit insertion, atmospheric entry):
+            # preserve travel direction instead of zeroing player intent.
+            self.velocity = _limited(_vector(velocity), 2000.0)
+            self.speed = _number(self.velocity.length(), 0, 0, 2000)
+        elif speed is not None:
+            amount = _number(speed, 0, 0, 2000)
+            self.velocity = self.forward() * amount
+            self.speed = amount
+        else:
+            self.velocity = Vec3(0)
+            self.speed = 0.0
         self.grounded = self.jetpacking = self.boosting = False
         self._solid_grounded = self.braking = self.drifting = False
         self.throttle = self.vertical_speed = 0.0
@@ -386,26 +396,34 @@ class PlayerController(DirectObject):
         self.jetpacking = self.boosting = False
         self.braking = self.ceiling = False
         self.collision_ids = ()
-        steps = max(1, math.ceil(dt / PHYSICS_STEP))
-        step = dt / steps
+        # Hitch clamp: at most 4 substeps (1/30 s of physics); leftover frame
+        # time is dropped instead of spiralling. Normal frames (dt <= 1/30)
+        # are untouched: physics_dt == dt, so the integration is identical.
+        physics_dt = dt if dt <= 4 * PHYSICS_STEP else 4 * PHYSICS_STEP
+        steps = max(1, math.ceil(physics_dt / PHYSICS_STEP))
+        step = physics_dt / steps
         gravity = _number(gravity, 12, 1, 40)
         upgrades = upgrades or {}
         decay_feedback = _exp(-5.0 * step)
         decay_step = _exp(-15.0 * step)
         decay_landing = _exp(-10.0 * step)
         mouse_step_x, mouse_step_y = dx / steps, dy / steps
+        # Hoisted: keys do not change mid-frame, so the arrow rates and the
+        # smoothing response are constant across this frame's substeps.
+        arrow_turn = self._axis("arrow_left", "arrow_right") * 100.0
+        arrow_tilt = self._axis("arrow_up", "arrow_down") * 80.0
+        smooth_response = 1.0 / (0.018 + 0.10 * smoothing) if smoothing > 0 else 0.0
+        previous = Vec3(self.position)
         for _ in range(steps):
             if smoothing > 0:
                 self._mouse_velocity, mouse_motion = _accelerate(
-                    self._mouse_velocity, mouse_rate, 1.0 / (0.018 + 0.10 * smoothing), step)
+                    self._mouse_velocity, mouse_rate, smooth_response, step)
                 mouse_x, mouse_y = mouse_motion.x, mouse_motion.y
             else:
-                self._mouse_velocity = Vec3(0)
+                self._mouse_velocity.set(0, 0, 0)
                 mouse_x, mouse_y = mouse_step_x, mouse_step_y
-            turn = (-mouse_x * sensitivity
-                    + self._axis("arrow_left", "arrow_right") * 100.0 * step)
-            tilt = (-mouse_y * sensitivity * invert
-                    + self._axis("arrow_up", "arrow_down") * 80.0 * step)
+            turn = (-mouse_x * sensitivity + arrow_turn * step)
+            tilt = (-mouse_y * sensitivity * invert + arrow_tilt * step)
             # A midpoint view direction keeps keyboard steering and travel
             # consistent at 30, 60, and high refresh rates.
             self._turn_view(turn * 0.5, tilt * 0.5)
@@ -413,7 +431,7 @@ class PlayerController(DirectObject):
             self.collision_feedback *= decay_feedback
             self._camera_step *= decay_step
             self._landing_offset *= decay_landing
-            previous = Vec3(self.position)
+            previous.set(self.position.x, self.position.y, self.position.z)
             if self.mode == "surface":
                 self._walk(step, height_fn, vitals, upgrades, gravity)
             else:
@@ -708,10 +726,12 @@ class PlayerController(DirectObject):
     def _sweep_ship_terrain(self, start, movement, height_fn):
         """Sweep the clearance envelope over a sampled height field.
 
-        Samples are at most 0.5 m apart, including unusually fast recovered
+        Samples are at most 1.0 m apart, including unusually fast recovered
         velocities. A binary search finds the first contact and the remaining
         motion slides along its slope; a ridge cannot be skipped by checking
-        only a frame's endpoint. The streamed solid world handles ship radius.
+        only a frame's endpoint. A segment that misses every sample advances
+        whole, and a motionless frame skips sampling entirely. The streamed
+        solid world handles ship radius.
         """
         position, remaining = Vec3(start), Vec3(movement)
         floor = self._height(height_fn, position.x, position.y) + SHIP_CLEARANCE
@@ -721,7 +741,9 @@ class PlayerController(DirectObject):
             self.grounded = True
         height = self._height
         for _ in range(4):
-            samples = max(1, math.ceil(math.hypot(remaining.x, remaining.y) / 0.5))
+            if remaining.lengthSquared() < 1e-10:
+                break
+            samples = max(1, math.ceil(math.hypot(remaining.x, remaining.y) / 1.0))
             lower, hit = 0.0, None
             px, py, pz = position.x, position.y, position.z
             rx, ry, rz = remaining.x, remaining.y, remaining.z
@@ -737,7 +759,7 @@ class PlayerController(DirectObject):
                 position += remaining
                 break
             upper = hit
-            for _ in range(12):
+            for _ in range(8):
                 middle = (lower + upper) * 0.5
                 qx, qy = px + rx * middle, py + ry * middle
                 floor = height(height_fn, qx, qy) + SHIP_CLEARANCE

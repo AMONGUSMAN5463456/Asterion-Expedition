@@ -348,6 +348,17 @@ class CollisionWorld:
         self._grid = {}
         self._shape_cells = {}
         self._large = set()
+        self._query_seen = set()
+        # Recover-skip cache: the center point, shape, ignore set, and shape
+        # generation of the last verified penetration-free move end. A move
+        # starting exactly there skips the standalone recover pass; its sweep
+        # still reports any fresh contact at fraction zero. Any group mutation
+        # bumps the generation and invalidates the cache.
+        self._generation = 0
+        self._free_point = None
+        self._free_shape = None
+        self._free_ignore = None
+        self._free_gen = -1
 
     @property
     def shape_count(self):
@@ -446,6 +457,7 @@ class CollisionWorld:
                 bucket.discard(key)
                 if not bucket:
                     del self._grid[cell]
+        self._generation += 1
 
     def clear(self):
         self._groups.clear()
@@ -453,20 +465,34 @@ class CollisionWorld:
         self._grid.clear()
         self._shape_cells.clear()
         self._large.clear()
+        self._generation += 1
 
     def _query(self, low, high, ignore):
         cells = self._cell_range(low, high, _MAX_QUERY_CELLS)
         shapes = self._shapes
         if cells is None:
-            ordered = sorted(shapes.keys())
+            # Index fallback: insertion order is deterministic. Every caller
+            # reduces by minimum gap/fraction or existence, so key order only
+            # breaks exact ties.
+            ordered = shapes.keys()
         else:
             grid = self._grid
-            keys = set(self._large)
+            seen = self._query_seen
+            seen.clear()
+            ordered = []
+            if self._large:
+                for key in sorted(self._large):
+                    seen.add(key)
+                    ordered.append(key)
             for cell in cells:
                 bucket = grid.get(cell)
-                if bucket:
-                    keys.update(bucket)
-            ordered = sorted(keys)
+                if not bucket:
+                    continue
+                members = sorted(bucket) if len(bucket) > 1 else bucket
+                for key in members:
+                    if key not in seen:
+                        seen.add(key)
+                        ordered.append(key)
         found = []
         for key in ordered:
             shape = shapes[key]
@@ -591,7 +617,14 @@ class CollisionWorld:
         offset = height / 2.
         point = (top[0], top[1], top[2] - offset)
         ignore = _ignored(ignore)
-        point, normals, ids = self._recover(point, radius, segment, ignore)
+        if (point == self._free_point and (radius, segment) == self._free_shape
+                and ignore == self._free_ignore and self._free_gen == self._generation):
+            # This exact center ended a previous move penetration-free with
+            # the same shape and world generation. Skip the standalone
+            # recover query; the sweep below still reports fresh contacts.
+            normals, ids = [], []
+        else:
+            point, normals, ids = self._recover(point, radius, segment, ignore)
         result = self._slide(point, delta, radius, segment, ignore)
         did_step = False
         if step_height > 0.:
@@ -604,10 +637,20 @@ class CollisionWorld:
             if not any(_dot(old, normal) > .9999 for old in normals):
                 normals.append(normal)
         ids.extend(shape_id for shape_id in move_ids if shape_id not in ids)
+        penetrated = False
         for shape in self._near(end, _ZERO, radius, segment, ignore):
             gap, normal = _distance(shape, end, radius, segment)
+            if gap < -1e-6:
+                penetrated = True
             if gap <= _CONTACT:
                 _append_contact(normals, ids, normal, shape.id)
+        if penetrated:
+            self._free_point = None
+        else:
+            self._free_point = end
+            self._free_shape = (radius, segment)
+            self._free_ignore = ignore
+            self._free_gen = self._generation
         output = Vec3(*(_number(x) for x in (end[0], end[1], end[2] + offset)))
         return MoveResult(output, [Vec3(*n) for n in normals],
                           any(n[2] >= _GROUND_Z or (did_step and n[2] > _EPS)

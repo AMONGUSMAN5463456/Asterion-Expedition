@@ -354,10 +354,14 @@ class WorldRenderer:
         return (dx*inv,dy*inv,dz*inv)
 
     def _ground_color(self,x,y,z):
+        sample=self._sample
+        slope=abs(sample(x+4,y)-sample(x-4,y))+abs(sample(x,y+4)-sample(x,y-4))
+        return self._ground_tint(x,y,z,slope)
+
+    def _ground_tint(self,x,y,z,slope):
         planet=self.planet
         base = planet["ground"]
         seed_value=self._seed_value
-        sample=self._sample
         sin=math.sin
         cos=math.cos
         wave = sin(x*.047+y*.022+seed_value*.01)*cos(y*.051-x*.013)
@@ -367,7 +371,6 @@ class WorldRenderer:
         patch = sin(x*.023+seed_value)*sin(y*.028+2.4)
         if patch > .25:
             col=mix(col,shade(planet["flora"],.74),(patch-.25)*.52)
-        slope=abs(sample(x+4,y)-sample(x-4,y))+abs(sample(x,y+4)-sample(x,y-4))
         col=mix(col,mix(base,(.33,.31,.29),.63),max(0,slope-2.2)*.16)
         if z < planet["water_level"]+2.5:
             col=mix(col,(.72,.71,.53),.4)
@@ -388,23 +391,49 @@ class WorldRenderer:
                 return result.value
 
     def _terrain_steps(self, ox, oy, size=CHUNK_SIZE, step=TERRAIN_STEP):
-        # Each vertex costs ~9 terrain_height evals (1 height + 4 normal + 4
-        # slope tint), all served by the lru_cached _sample; sharing samples
-        # across neighbours would change generator timing for no real gain.
+        # Grid heights are sampled once per point and shared with neighbours:
+        # each interior normal/slope reuses adjacent grid heights instead of
+        # re-calling the cached terrain sampler (~9 evals per vertex). Values
+        # are identical to per-vertex sampling; only edge fringes call out.
         mesh=Mesh()
         n=int(size/step)
-        rows=[]
         sample=self._sample
+        heights=[]
+        for j in range(n+1):
+            y=oy+j*step
+            heights.append([sample(ox+i*step,y) for i in range(n+1)])
+            yield
+        tint=self._ground_tint
         normal=self._normal
         ground_color=self._ground_color
+        # _normal/_ground_color always sample at +/-TERRAIN_STEP, so neighbour
+        # heights are only reusable on a 4m grid; coarser builds (far terrain)
+        # keep the exact per-vertex path.
+        on_grid=(step==TERRAIN_STEP)
+        dz=2*TERRAIN_STEP
+        dz2=dz*dz
+        sqrt=math.sqrt
+        rows=[]
         for j in range(n+1):
+            y=oy+j*step
+            hrow=heights[j]
             row=[]
             for i in range(n+1):
-                x,y=ox+i*step,oy+j*step
-                z=sample(x,y)
-                row.append(((x,y,z),normal(x,y),ground_color(x,y,z)))
+                x=ox+i*step
+                z=hrow[i]
+                if on_grid:
+                    hl=hrow[i-1] if i>0 else sample(x-TERRAIN_STEP,y)
+                    hr=hrow[i+1] if i<n else sample(x+TERRAIN_STEP,y)
+                    hd=heights[j-1][i] if j>0 else sample(x,y-TERRAIN_STEP)
+                    hu=heights[j+1][i] if j<n else sample(x,y+TERRAIN_STEP)
+                    dx=hl-hr
+                    dy=hd-hu
+                    inv=1.0/sqrt(dx*dx+dy*dy+dz2)
+                    row.append(((x,y,z),(dx*inv,dy*inv,dz*inv),
+                                tint(x,y,z,abs(hr-hl)+abs(hu-hd))))
+                else:
+                    row.append(((x,y,z),normal(x,y),ground_color(x,y,z)))
             rows.append(row)
-            yield
         for j in range(n):
             for i in range(n):
                 a,b,c,d=rows[j][i],rows[j][i+1],rows[j+1][i+1],rows[j+1][i]
@@ -947,10 +976,16 @@ class WorldRenderer:
                 x,y=x0+cos(t)*4.2,y0+sin(t)*3.5
                 hover=.9+sin(elapsed*1.4+dphase)*.28 if data["variant"]==1 else 0
                 z=height(x,y)+sin(elapsed*3+dphase)*.045+hover
+                heading=-degrees(t)
+                roll=sin(elapsed*2.8+dphase)*1.5
+                last=data.get("last")
+                if last is not None and abs(x-last[0])<.001 and abs(y-last[1])<.001 and abs(z-last[2])<.001 and abs(heading-last[3])<.001 and abs(roll-last[4])<.001:
+                    continue
+                data["last"]=(x,y,z,heading,roll)
                 node=entity["node"]
                 node.setPos(x,y,z)
-                node.setH(-degrees(t))
-                node.setR(sin(elapsed*2.8+dphase)*1.5)
+                node.setH(heading)
+                node.setR(roll)
             intensity=max(0,min(1,storm))
             if intensity>.01:
                 self._weather.show()
@@ -979,9 +1014,10 @@ class WorldRenderer:
                 self._sun_visual.setColorScale(1,.8+daylight*.2,.65+daylight*.35,daylight)
                 self.app.setBackgroundColor(*horizon)
                 self._last_light=elapsed
-        for node,speed in self._spinners:
-            if not node.isEmpty():
-                node.setH(node.getH()+dt*speed)
+        if dt != 0:
+            for node,speed in self._spinners:
+                if not node.isEmpty():
+                    node.setH(node.getH()+dt*speed)
 
     def destroy(self):
         if self._chunk_job is not None:

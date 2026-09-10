@@ -162,6 +162,8 @@ class GameUI:
         self.height = 900.0
         self._hud_labels = {}
         self._vital_bars = {}
+        self._hud_source = {}
+        self._compass_key = None
         self._measurements = {}
         self._short_cache = {}
         parent = getattr(app, "aspect2d", None)
@@ -306,6 +308,21 @@ class GameUI:
         self._short_cache[key] = result
         return result
 
+    def _set_label(self, key, text):
+        # Skip _clean/TextNode writes when the source is unchanged; the label
+        # itself also dedupes, so this only avoids repeated measure/clean work.
+        if self._hud_source.get(key) == text:
+            return
+        self._hud_source[key] = text
+        self._hud_labels[key].set(text)
+
+    def _set_short(self, key, value, width, size, bold=False):
+        source = value if isinstance(value, str) else _as_text(value)
+        if self._hud_source.get(key) == (source, width, size, bold):
+            return
+        self._hud_source[key] = (source, width, size, bold)
+        self._hud_labels[key].set(self._short(source, width, size, bold))
+
     def _card(self, parent, x, y, width, height, accent=CYAN, opacity=0.8):
         self._rect(parent, x, y, width, height, (NAVY[0], NAVY[1], NAVY[2], opacity))
         self._rect(parent, x, y, 3, min(44, height), accent)
@@ -354,6 +371,8 @@ class GameUI:
         self.hud = self._group(self.root, "asterion-hud", 20)
         self._hud_labels = {}
         self._vital_bars = {}
+        self._hud_source = {}
+        self._compass_key = None
         w = self.width
         cx = w / 2
         compact = w < 1350
@@ -572,57 +591,61 @@ class GameUI:
         mode = _as_text(view.get("mode", "surface"))
         flying = mode in ("orbit", "flight", "ship", "space")
         compact = self.width < 1350
-        labels["location"].set(self._short(view.get("location", "Uncharted world"),
-                                          265 if compact else 310,
-                                          26 if compact else 29, True))
+        wide = 310 if not compact else 265
+        self._set_short("location", view.get("location", "Uncharted world"),
+                        wide, 26 if compact else 29, True)
         biome = _as_text(view.get("biome", ""))
         mode_name = _MODE_NAMES.get(mode, mode.upper())
         biome_line = mode_name + ((" / " + biome.upper()) if biome else "")
-        labels["biome"].set(self._short(biome_line, 266 if compact else 310, 14))
+        self._set_short("biome", biome_line, 266 if compact else 310, 14)
         detail = view.get("location_detail") or view.get("system_name") or ""
         if view.get("storm"):
             detail = "ATMOSPHERIC STRESS  /  FIND SHELTER"
-        labels["location_detail"].set(self._short(detail, 266 if compact else 310, 12))
+        self._set_short("location_detail", detail, 266 if compact else 310, 12)
         labels["location_detail"].color(AMBER if view.get("storm") else MUTED)
         credits = max(0, int(_number(view.get("credits", 0))))
-        labels["credits"].set(f"{credits:,}")
+        self._set_label("credits", f"{credits:,}")
         cargo = max(0, int(_number(view.get("cargo", 0))))
         capacity = max(0, int(_number(view.get("capacity", 0))))
-        labels["cargo"].set(f"CARGO  {cargo:,} / {capacity:,}")
+        self._set_label("cargo", f"CARGO  {cargo:,} / {capacity:,}")
         self._cargo_bar.set(cargo / max(1, capacity), AMBER if cargo >= capacity > 0 else CYAN)
 
         heading = _number(view.get("heading", 0)) % 360
-        labels["heading"].set(f"{int(heading):03d}")
-        center_degree = math.floor(heading / 5) * 5
-        px_per_degree = self._compass_half / 43
-        half = self._compass_half
-        center_x = self.width / 2
-        cardinals = _CARDINALS
-        for index, (tick, label) in enumerate(self._compass_ticks):
-            degree = center_degree + (index - 9) * 5
-            offset = (degree - heading) * px_per_degree
-            if abs(offset) > half:
-                tick.hide()
-                continue
-            tick.show()
-            tick.setPos(center_x + offset, 0, -67)
-            normalized = degree % 360
-            text = cardinals.get(normalized)
-            if text is None:
-                text = str(normalized) if normalized % 30 == 0 else ""
-            label.set(text)
-            label.color(CYAN if normalized in cardinals else MUTED)
+        self._set_label("heading", f"{int(heading):03d}")
+        compass_key = (heading, self._compass_half, self.width)
+        if compass_key != self._compass_key:
+            self._compass_key = compass_key
+            center_degree = math.floor(heading / 5) * 5
+            px_per_degree = self._compass_half / 43
+            half = self._compass_half
+            center_x = self.width / 2
+            cardinals = _CARDINALS
+            for index, (tick, label) in enumerate(self._compass_ticks):
+                degree = center_degree + (index - 9) * 5
+                offset = (degree - heading) * px_per_degree
+                if abs(offset) > half:
+                    tick.hide()
+                    continue
+                tick.show()
+                tick.setPos(center_x + offset, 0, -67)
+                normalized = degree % 360
+                text = cardinals.get(normalized)
+                if text is None:
+                    text = str(normalized) if normalized % 30 == 0 else ""
+                label.set(text)
+                label.color(CYAN if normalized in cardinals else MUTED)
 
         objective = view.get("objective") or {}
         if not isinstance(objective, dict):
             objective = {"title": str(objective)}
         title = _as_text(objective.get("title", "Beyond the horizon"))
         description = _as_text(objective.get("description", "Your next discovery is waiting."))
+        mission_inner = self._mission_width - 38
         # The compact objective card is a tracker; complete prose lives in Journal.
-        labels["objective_title"].set(self._short(title, (self._mission_width - 38) * 1.78, 20, True))
-        labels["objective_description"].set(self._short(description, (self._mission_width - 38) * 2.6, 15))
+        self._set_short("objective_title", title, mission_inner * 1.78, 20, True)
+        self._set_short("objective_description", description, mission_inner * 2.6, 15)
         progress = objective.get("progress", "")
-        labels["objective_progress"].set(self._short(progress, self._mission_width - 38, 13))
+        self._set_short("objective_progress", progress, mission_inner, 13)
         ratio = objective.get("fraction", objective.get("ratio", None))
         if ratio is None and isinstance(progress, (float, int)):
             ratio = progress / 100 if progress > 1 else progress
@@ -646,27 +669,27 @@ class GameUI:
             value = _clamp(vitals.get(key, 100), 0, 100)
             color = RED if value <= 20 else AMBER if value <= 40 or key in ("hazard", "fuel") else CYAN
             bar.set(value / 100, color)
-            labels["vital_" + key].set(f"{math.ceil(value):d}")
+            self._set_label("vital_" + key, f"{math.ceil(value):d}")
             labels["vital_" + key].color(RED if value <= 20 else CREAM)
-        labels["vitals_title"].set("VESSEL SYSTEMS" if flying else "EXOSUIT SYSTEMS")
-        labels["telemetry_title"].set("FLIGHT TELEMETRY" if flying else "SURVEY TELEMETRY")
+        self._set_label("vitals_title", "VESSEL SYSTEMS" if flying else "EXOSUIT SYSTEMS")
+        self._set_label("telemetry_title", "FLIGHT TELEMETRY" if flying else "SURVEY TELEMETRY")
         speed = abs(_number(view.get("speed", 0)))
         altitude = _number(view.get("altitude", 0))
-        labels["speed"].set(f"{speed:.1f}" if speed < 100 else f"{speed:,.0f}")
-        labels["altitude"].set(f"{altitude:,.0f}" if abs(altitude) < 100000 else f"{altitude / 1000:.0f}k")
+        self._set_label("speed", f"{speed:.1f}" if speed < 100 else f"{speed:,.0f}")
+        self._set_label("altitude", f"{altitude:,.0f}" if abs(altitude) < 100000 else f"{altitude / 1000:.0f}k")
         coordinates = view.get("coordinates", "X 0  /  Y 0")
         if isinstance(coordinates, (list, tuple)):
             coordinates = " / ".join(f"{axis} {_number(value):,.0f}" for axis, value in zip("XYZ", coordinates))
-        labels["coordinates"].set(self._short(coordinates, 230 if compact else 258, 12))
-        labels["target"].set(self._short(view.get("target", ""), 560, 19, True))
+        self._set_short("coordinates", coordinates, 230 if compact else 258, 12)
+        self._set_short("target", view.get("target", ""), 560, 19, True)
         prompt = view.get("prompt", "")
-        labels["prompt"].set(self._short(prompt, 650, 15))
+        self._set_short("prompt", prompt, 650, 15)
         self._prompt_back.show() if prompt else self._prompt_back.hide()
-        labels["tool"].set(view.get("tool", "VESSEL / FLIGHT SYSTEMS" if flying else "MULTITOOL / SURVEY"))
+        self._set_label("tool", view.get("tool", "VESSEL / FLIGHT SYSTEMS" if flying else "MULTITOOL / SURVEY"))
         status, detail, amount, color = self._movement_readout(view, flying, speed)
-        labels["movement_status"].set(status)
+        self._set_label("movement_status", status)
         labels["movement_status"].color(color)
-        labels["movement_detail"].set(detail)
+        self._set_label("movement_detail", detail)
         self._movement_bar.set(amount, color)
         progress = _clamp(view.get("mining_progress", 0))
         if progress > 0:
@@ -686,24 +709,24 @@ class GameUI:
         if notice:
             self._notice_group.show()
             notice_width = min(520, max(270, self.width - 750)) - 34
-            labels["notice"].set(self._short(notice, notice_width * 1.8, 15))
+            self._set_short("notice", notice, notice_width * 1.8, 15)
         else:
             self._notice_group.hide()
         controls = view.get("controls")
         if controls is None:
             controls = ("W Thrust   S Brake/reverse   SHIFT Boost   SPACE/CTRL Rise/dive   E Dock   F Land   M Map   H Help   ESC Menu" if flying else
                         "WASD Move   SHIFT Sprint   SPACE Jump/jetpack   CTRL Air brake   E Interact   C Scan   I Cargo   H Help   ESC Menu")
-        labels["controls"].set(self._short(controls, self.width - 70, 12 if compact else 13))
+        self._set_short("controls", controls, self.width - 70, 12 if compact else 13)
         fps = view.get("fps")
-        labels["fps"].set(f"{_number(fps):.0f} FPS" if fps is not None else "")
+        self._set_label("fps", f"{_number(fps):.0f} FPS" if fps is not None else "")
         if flying:
             self._cockpit.show()
-            labels["flight_speed"].set(f"VEL {speed:.0f}")
-            labels["flight_altitude"].set(f"ALT {altitude:.0f}")
+            self._set_label("flight_speed", f"VEL {speed:.0f}")
+            self._set_label("flight_altitude", f"ALT {altitude:.0f}")
             vertical = _number(view.get("vertical_speed", 0))
-            labels["vertical_speed"].set(f"V/S {vertical:+.1f}")
+            self._set_label("vertical_speed", f"V/S {vertical:+.1f}")
             pitch = _clamp(_number(view.get("pitch", 0)), -90, 90)
-            labels["flight_pitch"].set(f"PITCH {pitch:+.0f}")
+            self._set_label("flight_pitch", f"PITCH {pitch:+.0f}")
             self._pitch_marker.setZ(-(438 + pitch * 1.12))
         else:
             self._cockpit.hide()

@@ -121,7 +121,7 @@ class Mesh:
             upper.append(tuple(b + radial * end_radius))
         for i in range(sides):
             j = (i + 1) % sides
-            col = shade(color, .87 + .15 * math.sin(i*2.31 + .8))
+            col = shade(color, .87 + .15 * sin(i*2.31 + .8))
             self.quad(lower[i], lower[j], upper[j], upper[i], col)
             if cap:
                 self.tri(tuple(a), lower[j], lower[i], shade(color, .75))
@@ -196,23 +196,39 @@ class Mesh:
     def add(self, other, pos=(0,0,0), scale=1, heading=0):
         if isinstance(scale, (int, float)):
             scale = (scale,)*3
-        ca, sa = math.cos(math.radians(heading)), math.sin(math.radians(heading))
         sx, sy, sz = scale
         if min(abs(sx), abs(sy), abs(sz)) < 1e-9:
             return
         px, py, pz = pos
+        if heading == 0:
+            ca, sa = 1.0, 0.0
+        else:
+            ca, sa = math.cos(math.radians(heading)), math.sin(math.radians(heading))
         nsx, nsy, nsz = abs(sx), abs(sy), abs(sz)
+        # Normal rotation/scale folded once per add; the per-vertex loop only
+        # applies it. For heading-0/scale-1 this is the identity, and vertex
+        # positions skip the multiply/rotate entirely (bit-identical output).
+        m00, m01 = ca / nsx, -sa / nsy
+        m10, m11 = sa / nsx, ca / nsy
+        m22 = 1.0 / nsz
         normal = Vec3()
         if other.texcoords and not self.texcoords:
             self.texcoords.extend(((0,0),)*len(self.vertices))
         if self.texcoords or other.texcoords:
             self.texcoords.extend(other.texcoords or ((0,0),)*len(other.vertices))
         verts, norms, cols = self.vertices, self.normals, self.colors
+        if sx == 1 and sy == 1 and sz == 1:
+            for p, n, color in zip(other.vertices, other.normals, other.colors):
+                verts.append((px + p[0], py + p[1], pz + p[2]))
+                normal.set(n[0] * m00 + n[1] * m01, n[0] * m10 + n[1] * m11, n[2] * m22)
+                normal.normalize()
+                norms.append(tuple(normal))
+                cols.append(color)
+            return
         for p, n, color in zip(other.vertices, other.normals, other.colors):
             x, y, z = p[0] * sx, p[1] * sy, p[2] * sz
             verts.append((px + x * ca - y * sa, py + x * sa + y * ca, pz + z))
-            nx, ny, nz = n[0] / nsx, n[1] / nsy, n[2] / nsz
-            normal.set(nx * ca - ny * sa, nx * sa + ny * ca, nz)
+            normal.set(n[0] * m00 + n[1] * m01, n[0] * m10 + n[1] * m11, n[2] * m22)
             normal.normalize()
             norms.append(tuple(normal))
             cols.append(color)
