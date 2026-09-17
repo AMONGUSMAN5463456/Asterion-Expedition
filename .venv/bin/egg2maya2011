@@ -1,0 +1,6 @@
+#!/Users/leonsaunders/Downloads/asterion-expedition-v1.2.0/releases/asterion-expedition-v1.3.0/.venv/bin/python
+import sys
+from panda3d_tools import egg2maya2011
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(egg2maya2011())

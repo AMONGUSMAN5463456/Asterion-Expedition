@@ -1,0 +1,128 @@
+{
+  "status": "passed",
+  "tests": 276,
+  "wall_seconds": 166.828,
+  "isolation": "Each test module runs in a fresh Python process; three workers.",
+  "modules": [
+    {
+      "module": "test_atmosphere_effects.py",
+      "tests": 9,
+      "seconds": 0.109,
+      "status": "passed"
+    },
+    {
+      "module": "test_collision.py",
+      "tests": 34,
+      "seconds": 0.019,
+      "status": "passed"
+    },
+    {
+      "module": "test_controller.py",
+      "tests": 17,
+      "seconds": 0.07,
+      "status": "passed"
+    },
+    {
+      "module": "test_flight_v12.py",
+      "tests": 11,
+      "seconds": 0.077,
+      "status": "passed"
+    },
+    {
+      "module": "test_graphics.py",
+      "tests": 15,
+      "seconds": 17.716,
+      "status": "passed"
+    },
+    {
+      "module": "test_integration.py",
+      "tests": 24,
+      "seconds": 166.384,
+      "status": "passed"
+    },
+    {
+      "module": "test_interface.py",
+      "tests": 9,
+      "seconds": 0.068,
+      "status": "passed"
+    },
+    {
+      "module": "test_movement_v11.py",
+      "tests": 20,
+      "seconds": 0.113,
+      "status": "passed"
+    },
+    {
+      "module": "test_navigation.py",
+      "tests": 14,
+      "seconds": 0.019,
+      "status": "passed"
+    },
+    {
+      "module": "test_packaging.py",
+      "tests": 16,
+      "seconds": 0.193,
+      "status": "passed"
+    },
+    {
+      "module": "test_planet_weather.py",
+      "tests": 6,
+      "seconds": 0.552,
+      "status": "passed"
+    },
+    {
+      "module": "test_planetary.py",
+      "tests": 15,
+      "seconds": 0.389,
+      "status": "passed"
+    },
+    {
+      "module": "test_planetary_v13.py",
+      "tests": 7,
+      "seconds": 0.625,
+      "status": "passed"
+    },
+    {
+      "module": "test_save_v12.py",
+      "tests": 15,
+      "seconds": 0.094,
+      "status": "passed"
+    },
+    {
+      "module": "test_save_v13.py",
+      "tests": 9,
+      "seconds": 0.016,
+      "status": "passed"
+    },
+    {
+      "module": "test_seamless_integration.py",
+      "tests": 8,
+      "seconds": 59.14,
+      "status": "passed"
+    },
+    {
+      "module": "test_seamless_world.py",
+      "tests": 6,
+      "seconds": 42.787,
+      "status": "passed"
+    },
+    {
+      "module": "test_systems.py",
+      "tests": 26,
+      "seconds": 0.11,
+      "status": "passed"
+    },
+    {
+      "module": "test_terrain_v13.py",
+      "tests": 8,
+      "seconds": 5.105,
+      "status": "passed"
+    },
+    {
+      "module": "test_world.py",
+      "tests": 7,
+      "seconds": 6.797,
+      "status": "passed"
+    }
+  ]
+}

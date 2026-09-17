@@ -1,0 +1,2 @@
+# The game otherwise uses Python's standard library.
+panda3d==1.10.16

@@ -1,0 +1,395 @@
+{
+  "version": "1.3.0",
+  "platform": "macOS-26.3.1-arm64-arm-64bit",
+  "python": "3.12.14",
+  "renderer": "native",
+  "status": "passed",
+  "scenarios": [
+    {
+      "scenario": "talora-land",
+      "planet": "Talora",
+      "diameter_m": 56332.799999999996,
+      "surface": "land",
+      "descent_speed_m_s": 900,
+      "simulated_seconds": 7.8,
+      "wall_seconds": 16.494,
+      "contact_altitude_m": 3.0248,
+      "maximum_frame_travel_m": 30.0,
+      "modes": [
+        "flight",
+        "orbit"
+      ],
+      "normal_touchdown": true,
+      "hit_ids": [
+        "planet:s0-p0:terrain"
+      ],
+      "snapshots": [
+        {
+          "file": "talora-land-6900m.png",
+          "altitude": 6880.001,
+          "mode": "orbit",
+          "frame": 3
+        },
+        {
+          "file": "talora-land-3500m.png",
+          "altitude": 3490.001,
+          "mode": "orbit",
+          "frame": 116
+        },
+        {
+          "file": "talora-land-2200m.png",
+          "altitude": 2170.001,
+          "mode": "flight",
+          "frame": 160
+        },
+        {
+          "file": "talora-land-0950m.png",
+          "altitude": 940.001,
+          "mode": "flight",
+          "frame": 201
+        },
+        {
+          "file": "talora-land-0650m.png",
+          "altitude": 640.001,
+          "mode": "flight",
+          "frame": 211
+        },
+        {
+          "file": "talora-land-0400m.png",
+          "altitude": 370.001,
+          "mode": "flight",
+          "frame": 220
+        },
+        {
+          "file": "talora-land-0120m.png",
+          "altitude": 100.001,
+          "mode": "flight",
+          "frame": 229
+        },
+        {
+          "file": "talora-land-0030m.png",
+          "altitude": 10.001,
+          "mode": "flight",
+          "frame": 232
+        },
+        {
+          "file": "talora-land-0005m.png",
+          "altitude": 3.025,
+          "mode": "flight",
+          "frame": 233
+        }
+      ],
+      "median_update_ms": 13.83,
+      "p95_update_ms": 141.1
+    },
+    {
+      "scenario": "deep-ocean",
+      "planet": "Yriyth 1b",
+      "diameter_m": 60422.399999999994,
+      "surface": "ocean",
+      "descent_speed_m_s": 900,
+      "simulated_seconds": 7.8,
+      "wall_seconds": 8.399,
+      "contact_altitude_m": 3.0293,
+      "maximum_frame_travel_m": 30.0042,
+      "modes": [
+        "flight",
+        "orbit"
+      ],
+      "normal_touchdown": false,
+      "hit_ids": [
+        "planet:s0-p1:terrain"
+      ],
+      "snapshots": [
+        {
+          "file": "deep-ocean-6900m.png",
+          "altitude": 6880.084,
+          "mode": "orbit",
+          "frame": 3
+        },
+        {
+          "file": "deep-ocean-3500m.png",
+          "altitude": 3492.279,
+          "mode": "orbit",
+          "frame": 116
+        },
+        {
+          "file": "deep-ocean-2200m.png",
+          "altitude": 2172.749,
+          "mode": "flight",
+          "frame": 160
+        },
+        {
+          "file": "deep-ocean-0950m.png",
+          "altitude": 942.742,
+          "mode": "flight",
+          "frame": 201
+        },
+        {
+          "file": "deep-ocean-0650m.png",
+          "altitude": 642.747,
+          "mode": "flight",
+          "frame": 211
+        },
+        {
+          "file": "deep-ocean-0400m.png",
+          "altitude": 372.746,
+          "mode": "flight",
+          "frame": 220
+        },
+        {
+          "file": "deep-ocean-0120m.png",
+          "altitude": 102.745,
+          "mode": "flight",
+          "frame": 229
+        },
+        {
+          "file": "deep-ocean-0030m.png",
+          "altitude": 12.747,
+          "mode": "flight",
+          "frame": 232
+        },
+        {
+          "file": "deep-ocean-0005m.png",
+          "altitude": 3.029,
+          "mode": "flight",
+          "frame": 233
+        }
+      ],
+      "median_update_ms": 11.25,
+      "p95_update_ms": 68.21
+    },
+    {
+      "scenario": "far-hemisphere",
+      "planet": "Talora",
+      "diameter_m": 56332.799999999996,
+      "surface": "land",
+      "descent_speed_m_s": 900,
+      "simulated_seconds": 7.8,
+      "wall_seconds": 15.277,
+      "contact_altitude_m": 3.0262,
+      "maximum_frame_travel_m": 30.0,
+      "modes": [
+        "flight",
+        "orbit"
+      ],
+      "normal_touchdown": false,
+      "hit_ids": [
+        "planet:s0-p0:terrain"
+      ],
+      "snapshots": [
+        {
+          "file": "far-hemisphere-6900m.png",
+          "altitude": 6879.998,
+          "mode": "orbit",
+          "frame": 3
+        },
+        {
+          "file": "far-hemisphere-3500m.png",
+          "altitude": 3489.998,
+          "mode": "orbit",
+          "frame": 116
+        },
+        {
+          "file": "far-hemisphere-2200m.png",
+          "altitude": 2199.998,
+          "mode": "orbit",
+          "frame": 159
+        },
+        {
+          "file": "far-hemisphere-0950m.png",
+          "altitude": 939.998,
+          "mode": "flight",
+          "frame": 201
+        },
+        {
+          "file": "far-hemisphere-0650m.png",
+          "altitude": 639.998,
+          "mode": "flight",
+          "frame": 211
+        },
+        {
+          "file": "far-hemisphere-0400m.png",
+          "altitude": 399.998,
+          "mode": "flight",
+          "frame": 219
+        },
+        {
+          "file": "far-hemisphere-0120m.png",
+          "altitude": 99.998,
+          "mode": "flight",
+          "frame": 229
+        },
+        {
+          "file": "far-hemisphere-0030m.png",
+          "altitude": 9.998,
+          "mode": "flight",
+          "frame": 232
+        },
+        {
+          "file": "far-hemisphere-0005m.png",
+          "altitude": 3.026,
+          "mode": "flight",
+          "frame": 233
+        }
+      ],
+      "median_update_ms": 9.97,
+      "p95_update_ms": 134.58
+    },
+    {
+      "scenario": "north-pole",
+      "planet": "Naeessa 1c",
+      "diameter_m": 56025.600000000006,
+      "surface": "land",
+      "descent_speed_m_s": 900,
+      "simulated_seconds": 7.8,
+      "wall_seconds": 14.219,
+      "contact_altitude_m": 3.0294,
+      "maximum_frame_travel_m": 30.0,
+      "modes": [
+        "flight",
+        "orbit"
+      ],
+      "normal_touchdown": false,
+      "hit_ids": [
+        "planet:s0-p2:terrain",
+        "s0-p2:f4:c0,-1:rock7:stone"
+      ],
+      "snapshots": [
+        {
+          "file": "north-pole-6900m.png",
+          "altitude": 6879.99,
+          "mode": "orbit",
+          "frame": 3
+        },
+        {
+          "file": "north-pole-3500m.png",
+          "altitude": 3489.99,
+          "mode": "orbit",
+          "frame": 116
+        },
+        {
+          "file": "north-pole-2200m.png",
+          "altitude": 2199.99,
+          "mode": "orbit",
+          "frame": 159
+        },
+        {
+          "file": "north-pole-0950m.png",
+          "altitude": 939.99,
+          "mode": "flight",
+          "frame": 201
+        },
+        {
+          "file": "north-pole-0650m.png",
+          "altitude": 639.99,
+          "mode": "flight",
+          "frame": 211
+        },
+        {
+          "file": "north-pole-0400m.png",
+          "altitude": 399.99,
+          "mode": "flight",
+          "frame": 219
+        },
+        {
+          "file": "north-pole-0120m.png",
+          "altitude": 99.99,
+          "mode": "flight",
+          "frame": 229
+        },
+        {
+          "file": "north-pole-0030m.png",
+          "altitude": 9.99,
+          "mode": "flight",
+          "frame": 232
+        },
+        {
+          "file": "north-pole-0005m.png",
+          "altitude": 3.029,
+          "mode": "flight",
+          "frame": 233
+        }
+      ],
+      "median_update_ms": 11.38,
+      "p95_update_ms": 125.87
+    },
+    {
+      "scenario": "south-pole",
+      "planet": "Naeessa 1c",
+      "diameter_m": 56025.600000000006,
+      "surface": "land",
+      "descent_speed_m_s": 900,
+      "simulated_seconds": 7.8,
+      "wall_seconds": 14.322,
+      "contact_altitude_m": 3.0235,
+      "maximum_frame_travel_m": 30.0,
+      "modes": [
+        "flight",
+        "orbit"
+      ],
+      "normal_touchdown": false,
+      "hit_ids": [
+        "planet:s0-p2:terrain"
+      ],
+      "snapshots": [
+        {
+          "file": "south-pole-6900m.png",
+          "altitude": 6880.009,
+          "mode": "orbit",
+          "frame": 3
+        },
+        {
+          "file": "south-pole-3500m.png",
+          "altitude": 3490.009,
+          "mode": "orbit",
+          "frame": 116
+        },
+        {
+          "file": "south-pole-2200m.png",
+          "altitude": 2170.009,
+          "mode": "flight",
+          "frame": 160
+        },
+        {
+          "file": "south-pole-0950m.png",
+          "altitude": 940.009,
+          "mode": "flight",
+          "frame": 201
+        },
+        {
+          "file": "south-pole-0650m.png",
+          "altitude": 640.009,
+          "mode": "flight",
+          "frame": 211
+        },
+        {
+          "file": "south-pole-0400m.png",
+          "altitude": 370.009,
+          "mode": "flight",
+          "frame": 220
+        },
+        {
+          "file": "south-pole-0120m.png",
+          "altitude": 100.009,
+          "mode": "flight",
+          "frame": 229
+        },
+        {
+          "file": "south-pole-0030m.png",
+          "altitude": 10.009,
+          "mode": "flight",
+          "frame": 232
+        },
+        {
+          "file": "south-pole-0005m.png",
+          "altitude": 3.023,
+          "mode": "flight",
+          "frame": 233
+        }
+      ],
+      "median_update_ms": 9.4,
+      "p95_update_ms": 153.76
+    }
+  ]
+}
