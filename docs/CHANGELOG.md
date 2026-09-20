@@ -1,4 +1,23 @@
-# Version 1.3.0 — living horizons
+# Changelog
+
+## Version 1.4.0 — Celestial
+
+- Rebuilt visual presentation with per-pixel materials, directional shadows,
+  selective bloom, antialiasing, atmospheric colour and a detailed stellar sky.
+- Added continuous terrain grain, biome-specific earth and mineral palettes,
+  animated ocean reflections and shoreline foam, improved cloud billows and
+  a smooth, sunlit atmospheric limb.
+- Reworked plants, grass, stones, crystals, wildlife, ship, outpost, ruin,
+  construction and orbital station geometry. Added flexible vegetation and
+  fine ground cover without changing the resource catalogue or terrain shape.
+- Refined the survey tool and cockpit, added extraction contact light and
+  survey-wave feedback, and enriched atmospheric entry/exit filaments.
+- Redesigned title, HUD and all field-terminal panels with new bundled fonts,
+  destination illustrations and clearer action hierarchy.
+- Retained the source launchers, offline play, existing save schema, seamless
+  flight and all exploration/economy/story systems.
+
+## Version 1.3.0 — living horizons
 
 - Expanded physical diameters and system distances fourfold (planets about
   36–61 km across), retaining catalog seeds, IDs, names, economy and story.
@@ -28,7 +47,7 @@ See TEST_REPORT.md for measured checks and their limits.
 
 ---
 
-# Version 1.2.0 — continuous horizons
+## Version 1.2.0 — continuous horizons
 
 - Replaced the ground/orbit scene swap with one persistent system of spherical
   planets. Ascent, re-entry and far-hemisphere exploration are physical flights.
@@ -57,7 +76,8 @@ See TEST_REPORT.md for exercised behavior and platform limitations.
 
 ---
 
-# Version 1.1.0 — worlds in colour
+## Version 1.1.0 — worlds in colour
+
 
 ## Graphics
 

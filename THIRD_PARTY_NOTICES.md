@@ -4,8 +4,19 @@
 
 `assets/fonts/DejaVuSans.ttf` and `assets/fonts/DejaVuSans-Bold.ttf` are unmodified
 DejaVu fonts. Their copyright and redistributable Bitstream Vera / DejaVu terms
-are included in `assets/fonts/LICENSE-DejaVu.txt`. These fonts are the only
-third-party art assets included in this source package.
+are included in `assets/fonts/LICENSE-DejaVu.txt`. They remain available as the
+interface's fallback fonts.
+
+`assets/fonts/Barlow-Regular.ttf`, `Barlow-SemiBold.ttf`, and `Barlow-Light.ttf`
+are unmodified Barlow fonts, copyright 2017 The Barlow Project Authors. The
+interface's instrument numerals use the unmodified `Rajdhani-Medium.ttf`,
+copyright 2014 Indian Type Foundry. Both families are distributed under the
+SIL Open Font License 1.1; the complete notices are included in
+`assets/fonts/LICENSE-Barlow.txt` and `assets/fonts/LICENSE-Rajdhani.txt`.
+The font files were obtained from the [Google Fonts repository](https://github.com/google/fonts),
+with upstream projects at [Barlow](https://github.com/jpt/barlow) and
+[Rajdhani](https://github.com/itfoundry/rajdhani). The bundled font families are
+the only third-party art assets in this source package.
 
 ## Runtime dependency
 

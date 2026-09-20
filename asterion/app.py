@@ -28,6 +28,8 @@ from .state import GameState
 from .ui import GameUI
 from .universe import galaxy_catalog, generate_system
 from .seamless_world import SeamlessWorld
+from .visual_pipeline import VisualPipeline
+from .exploration_vfx import ExplorationVFX, mining_beam
 
 
 def default_save_dir() -> Path:
@@ -62,6 +64,7 @@ class ExpeditionApp(ShowBase):
         self.game = GameState()
         self.system = generate_system(0)
         self.planet = self.system["planets"][0]
+        self.visuals = VisualPipeline(self)
         self.world = SeamlessWorld(self)
         self.frame = None
         self.atmosphere_data = {"density": 0.0, "space_blend": 1.0, "heat": 0.0,
@@ -69,6 +72,7 @@ class ExpeditionApp(ShowBase):
                                 "altitude": 0.0, "radial_speed": 0.0}
         self.controller = PlayerController(self)
         self.effects = PlayerEffects(self)
+        self.exploration_vfx = ExplorationVFX(self)
         self.atmosphere_effects = AtmosphereEffects(self)
         self.ui = GameUI(self, self.action)
         self.audio = AudioManager(self, volume=0 if no_audio else self.game.settings.get("volume", .45))
@@ -650,6 +654,7 @@ class ExpeditionApp(ShowBase):
         if not self.playing:
             return
         self.scanner_time = 7.0
+        self.exploration_vfx.scan()
         self.audio.play("scan")
         self._find_target()
         entity = self.target
@@ -745,14 +750,7 @@ class ExpeditionApp(ShowBase):
             self.mine_id = entity["id"]
         start = Vec3(self.controller.position) + self.controller.forward() * .8 + Vec3(.18, 0, -.2)
         end = Vec3(*entity["pos"]) + Vec3(0, 0, min(entity.get("radius", 2) * .5, 3))
-        line = LineSegs("mining-beam")
-        line.setThickness(3)
-        line.setColor(.15, .95, 1, 1)
-        line.moveTo(start)
-        line.drawTo(end)
-        self.beam = self.render.attachNewNode(line.create())
-        self.beam.setLightOff()
-        self.beam.setFogOff()
+        self.beam = mining_beam(self.render, start, end, self.game.elapsed)
         duration = max(.25, float(entity.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35))
         previous = self.mine_time
         self.mine_time += dt
@@ -981,6 +979,8 @@ class ExpeditionApp(ShowBase):
                             boosting=self.controller.boosting, braking=self.controller.braking,
                             collision_feedback=self.controller.collision_feedback)
         self.hud_time += dt
+        self.visuals.update()
+        self.exploration_vfx.update(dt if self.playing else 0)
         if self.hud_time >= 1 / 20:
             self.hud_time = 0
             self.ui.update(self._view())
@@ -1481,9 +1481,11 @@ class ExpeditionApp(ShowBase):
         self._remove_ship()
         self.controller.destroy()
         self.effects.destroy()
+        self.exploration_vfx.destroy()
         self.atmosphere_effects.destroy()
         self.ui.destroy()
         self.audio.destroy()
         self.world.destroy()
+        self.visuals.destroy()
         self.fade.removeNode()
         self.destroy()

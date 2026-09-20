@@ -13,7 +13,8 @@ from functools import lru_cache
 import math
 import random
 
-from panda3d.core import Geom, GeomVertexWriter, SamplerState, Texture, TransparencyAttrib, Vec3
+from panda3d.core import (BitMask32, Geom, GeomVertexWriter, SamplerState, Shader,
+                          Texture, TransparencyAttrib, Vec3)
 
 from .geometry import Mesh
 from .planetary import ATMOSPHERE_TOP, CLOUD_BOTTOM, CLOUD_TOP, PlanetFrame
@@ -66,21 +67,47 @@ class CloudPuff:
 
 @lru_cache(maxsize=1)
 def _cloud_texture():
-    """Small original soft billow; shared RAM texture needs no shader or asset."""
-    width = 64
+    """Light an original cluster of ellipsoids into a soft cloud impostor.
+
+    Overlapping lobes provide an irregular silhouette, denser cores, a cool
+    underside and sunlit shoulders. Actual in-world puffs still have physical
+    depth and parallax; this is their shared, inexpensive fine structure.
+    """
+    width = 128
+    lobes = ((-.12,-.10,.64,.48,.48),(-.54,-.10,.34,.32,.34),
+             (.47,-.08,.36,.35,.33),(-.34,.23,.36,.38,.37),
+             (.07,.30,.42,.43,.43),(.40,.25,.27,.31,.31),
+             (-.66,.09,.22,.23,.22),(.67,.06,.23,.25,.21),
+             (-.25,.51,.24,.23,.23),(.14,.57,.23,.24,.24),
+             (.55,.34,.18,.20,.18),(-.08,-.40,.43,.21,.28))
     pixels = bytearray(width * width * 4)
     for y in range(width):
         for x in range(width):
             u, v = 2 * (x + .5) / width - 1, 2 * (y + .5) / width - 1
-            angle = math.atan2(v, u)
-            rim = .88 + .055 * math.sin(angle * 5 + .7) + .045 * math.sin(angle * 9)
-            radius = math.hypot(u, v) / rim
-            billow = .80 + .12 * math.sin(u * 12 + v * 5) * math.sin(v * 11 - u * 3)
-            alpha = max(0., 1 - radius * radius) ** 1.3 * billow
-            brightness = .91 + .06 * math.sin(v * 3 + .8) + .025 * math.cos(u * 9 + v * 4)
+            mass, front, normal = 0., -1., (0., 0., 1.)
+            # The low-amplitude warp breaks up perfect circular shoulders.
+            uu = u + .018 * math.sin(v * 27 + math.sin(u * 11))
+            vv = v + .014 * math.sin(u * 31 - math.sin(v * 14))
+            for cx,cy,rx,ry,rz in lobes:
+                dx,dy=uu-cx,vv-cy
+                section=1-(dx/rx)**2-(dy/ry)**2
+                if section <= 0:
+                    continue
+                mass += section ** 1.55 * .65
+                surface=math.sqrt(section)*rz
+                if surface > front:
+                    front=surface
+                    normal=(dx/(rx*rx),dy/(ry*ry),surface/(rz*rz))
+            billow=.92+.05*math.sin(u*49+v*17)*math.sin(v*41-u*13)
+            alpha=(1-math.exp(-mass*2.8))*billow
+            length=math.sqrt(sum(c*c for c in normal))
+            diffuse=max(0.,(-normal[0]*.42+normal[1]*.64+normal[2]*.65)/length)
+            underside=_smooth(-.35,.4,v)
+            illumination=.60*diffuse+.40*underside
+            color=(.67+.33*illumination,.73+.27*illumination,.81+.19*illumination)
             offset = (y * width + x) * 4
-            pixels[offset:offset + 4] = bytes((int(brightness * 244),
-                int(brightness * 249), int(brightness * 255), int(alpha * 255)))
+            pixels[offset:offset + 4] = bytes((*[int(c*255) for c in color],
+                                               int(max(0.,min(1.,alpha))*255)))
     texture = Texture("soft-world-cloud-billow")
     texture.setup2dTexture(width, width, Texture.TUnsignedByte, Texture.FRgba8)
     texture.setRamImageAs(bytes(pixels), "RGBA")
@@ -163,16 +190,21 @@ def _visibility(radius, observer, puff):
 def _limb_mesh(radius, color):
     """Haze falloff measured in metres rather than a percentage of planet size."""
     mesh = Mesh()
-    rings = ((-.8, 110., .12, .22), (110., 330., .22, .15),
-             (330., 850., .15, .052), (850., ATMOSPHERE_TOP, .052, 0.))
+    # Thin luminous ozone band within a broad, soft scattering tail.
+    rings = ((-1., 48., .18, .34), (48., 140., .34, .27),
+             (140., 360., .27, .15), (360., 800., .15, .046),
+             (800., ATMOSPHERE_TOP, .046, 0.))
     for inner, outer, alpha0, alpha1 in rings:
-        for index in range(96):
-            a, b = math.tau * index / 96, math.tau * (index + 1) / 96
+        for index in range(192):
+            a, b = math.tau * index / 192, math.tau * (index + 1) / 192
             def point(height, angle):
                 return ((radius + height) * math.cos(angle), 0,
                         (radius + height) * math.sin(angle))
             points = (point(inner, a), point(outer, a), point(outer, b), point(inner, b))
-            colors = ((*color, alpha0), (*color, alpha1), (*color, alpha1), (*color, alpha0))
+            inner_tint=tuple(min(1.,c*.72+.24) for c in color)
+            outer_tint=tuple(c*.82 for c in color)
+            colors = ((*inner_tint, alpha0), (*outer_tint, alpha1),
+                      (*outer_tint, alpha1), (*inner_tint, alpha0))
             for indices in ((0, 1, 2), (0, 2, 3)):
                 mesh.tri(*(points[i] for i in indices), colors[0],
                          colors=tuple(colors[i] for i in indices))
@@ -185,17 +217,100 @@ def fog_profile(data, tone, cloud_density=0., storm=0.):
     cloud = max(0., min(1., float(cloud_density)))
     storm = max(0., min(1., float(storm)))
     cloud *= _smooth(0., .015, density)
-    color = tuple(tone[i] * (1 - cloud * .52) + (.72, .79, .85)[i] * cloud * .52
+    brightness = max(.08, min(1., max(tone[:3]) * 1.8))
+    air = tuple(tone[i] * .52 + (.62,.76,.80)[i] * brightness * .48
+                for i in range(3))
+    color = tuple(air[i] * (1 - cloud * .52) + (.72, .79, .85)[i] * cloud * .52
                   for i in range(3))
-    return color, density * (.00015 + storm * .0005) + cloud * .0009
+    return color, density * (.00026 + storm * .00045) + cloud * .00076
+
+
+@lru_cache(maxsize=1)
+def _cloud_shader():
+    return Shader.make(Shader.SL_GLSL, """#version 150
+uniform mat4 p3d_ModelViewProjectionMatrix;
+in vec4 p3d_Vertex;
+in vec4 p3d_Color;
+in vec2 p3d_MultiTexCoord0;
+out vec3 body_position;
+out vec4 billow_color;
+out vec2 uv;
+void main() {
+    gl_Position = p3d_ModelViewProjectionMatrix * p3d_Vertex;
+    body_position = p3d_Vertex.xyz;
+    billow_color = p3d_Color;
+    uv = p3d_MultiTexCoord0;
+}
+""", """#version 150
+uniform sampler2D p3d_Texture0;
+uniform vec4 p3d_ColorScale;
+uniform vec3 ae_observer;
+uniform vec3 ae_fog_color;
+uniform float ae_fog_density;
+in vec3 body_position;
+in vec4 billow_color;
+in vec2 uv;
+out vec4 fragColor;
+void main() {
+    vec4 cloud = texture(p3d_Texture0, uv);
+    float alpha = cloud.a * billow_color.a * p3d_ColorScale.a;
+    if (alpha < .004) discard;
+    vec3 delta = ae_observer - body_position;
+    float distance = max(.01,length(delta));
+    vec3 sun = vec3(-.680374,-.620341,.390214);
+    float day = smoothstep(-.12,.22,dot(normalize(body_position),sun));
+    float forward_scatter = pow(max(0.0,dot(-delta/distance,sun)),8.0);
+    float rim = pow(max(0.0,1.0-cloud.a),1.6);
+    vec3 color = cloud.rgb * billow_color.rgb;
+    color += vec3(1.0,.83,.61) * forward_scatter * rim * day * .24;
+    color *= p3d_ColorScale.rgb;
+    float haze = 1.0 - exp(-distance * ae_fog_density * .72);
+    color = mix(color,ae_fog_color,clamp(haze,0.0,1.0));
+    fragColor = vec4(color,alpha);
+}
+""")
+
+
+@lru_cache(maxsize=1)
+def _limb_shader():
+    return Shader.make(Shader.SL_GLSL, """#version 150
+uniform mat4 p3d_ModelViewProjectionMatrix;
+in vec4 p3d_Vertex;
+in vec4 p3d_Color;
+out vec3 ring_position;
+out vec4 haze_color;
+void main() {
+    gl_Position = p3d_ModelViewProjectionMatrix * p3d_Vertex;
+    ring_position = p3d_Vertex.xyz;
+    haze_color = p3d_Color;
+}
+""", """#version 150
+uniform vec4 p3d_ColorScale;
+uniform vec3 ae_limb_sun;
+uniform vec2 ae_limb_tangent;
+in vec3 ring_position;
+in vec4 haze_color;
+out vec4 fragColor;
+void main() {
+    float incidence = dot(normalize(ring_position),ae_limb_sun)
+                      * ae_limb_tangent.x + ae_limb_tangent.y;
+    float day = smoothstep(-.19,.34,incidence);
+    float twilight = (1.0 - smoothstep(.06,.31,abs(incidence))) * .44;
+    vec3 color = mix(haze_color.rgb,vec3(1.0,.55,.28),twilight);
+    color *= mix(.26,1.17,day);
+    fragColor = vec4(color,haze_color.a * mix(.22,1.0,day)) * p3d_ColorScale;
+}
+""")
 
 
 class PlanetWeather:
     """A bounded, static collection of world-space cloud banks and limb haze."""
 
-    def __init__(self, field, body):
+    def __init__(self, field, body, *, gpu=False):
         self.field = field
+        self._gpu = bool(gpu)
         self.root = body.attachNewNode("physical-planet-weather")
+        self.root.hide(BitMask32.bit(1))
         self.clouds = self.root.attachNewNode("finite-depth-cloud-banks")
         self.clouds.setLightOff(10)
         self.clouds.setMaterialOff(10)
@@ -213,6 +328,11 @@ class PlanetWeather:
         self.limb.setTransparency(TransparencyAttrib.MAlpha)
         self.limb.setDepthWrite(False)
         self.limb.setFogOff(10)
+        if self._gpu:
+            self.clouds.setShader(_cloud_shader(), 30)
+            self.limb.setShader(_limb_shader(), 30)
+            self.limb.setShaderInput("ae_limb_sun", *_SUN)
+            self.limb.setShaderInput("ae_limb_tangent", 1., 0.)
         self.puffs = []
         self.banks = []
         self._billows = []
@@ -318,6 +438,11 @@ class PlanetWeather:
         self.limb.setPos(normal * (self.field.radius * tangent))
         self.limb.lookAt(relative)
         self.limb.setScale(math.sqrt(max(.001, 1 - tangent * tangent)))
+        if self._gpu:
+            inverse = self.limb.getQuat(self.root).conjugate()
+            self.limb.setShaderInput("ae_limb_sun", *inverse.xform(_SUN))
+            self.limb.setShaderInput("ae_limb_tangent",
+                math.sqrt(max(.001,1-tangent*tangent)), normal.dot(_SUN)*tangent)
         alpha = _smooth(450., 1800., altitude)
         self.limb.setColorScale(1, 1, 1, alpha)
         self.limb.show() if alpha > .001 else self.limb.hide()

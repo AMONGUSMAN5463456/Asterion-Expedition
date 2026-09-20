@@ -1,0 +1,43 @@
+{
+  "version": "1.4.0",
+  "renderer": "Apple M4",
+  "gpu": true,
+  "size": [
+    1280,
+    720
+  ],
+  "startup_seconds": 9.29,
+  "timings": {
+    "surface": {
+      "median_ms": 28.32,
+      "p95_ms": 31.96,
+      "update_median_ms": 17.93,
+      "render_median_ms": 10.2,
+      "loaded_chunks": 81,
+      "queued_chunks": 0
+    }
+  },
+  "images": [
+    "biome-crystalline.png",
+    "biome-desert.png",
+    "biome-frozen.png",
+    "biome-fungal.png",
+    "biome-oceanic.png",
+    "biome-toxic.png",
+    "biome-verdant.png",
+    "biome-volcanic.png",
+    "build.png",
+    "craft.png",
+    "help.png",
+    "inventory.png",
+    "journal.png",
+    "map.png",
+    "orbit-clean.png",
+    "orbit.png",
+    "settings.png",
+    "surface-clean.png",
+    "surface-no-shadows.png",
+    "surface.png",
+    "title.png"
+  ]
+}

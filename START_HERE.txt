@@ -1,4 +1,4 @@
-ASTERION EXPEDITION 1.3.0 — LIVING HORIZONS
+ASTERION EXPEDITION 1.4.0 — CELESTIAL
 An original, offline 3D space-exploration game.
 
 1. Extract this entire ZIP into a writable folder.
@@ -27,5 +27,7 @@ README.md has setup help, controls, save locations, and current limitations.
 docs/FIELD_GUIDE.md explains the first expedition step by step.
 docs/REFERENCE.md lists all materials, recipes, buildings, and biomes.
 docs/TEST_REPORT.md records testing and its limits.
-docs/CHANGELOG.md describes the larger planets, continuous terrain and cloud depth.
-docs/screenshots contains actual rendered game images.
+docs/CHANGELOG.md describes the Celestial graphics update and earlier flight updates.
+docs/validation-v1.4 contains actual rendered game images.
+Hardware effects require OpenGL 3.2+. A compatible software renderer is available:
+    python3 bootstrap.py --software

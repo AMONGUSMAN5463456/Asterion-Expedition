@@ -187,6 +187,77 @@ class NativeInterfaceTests(unittest.TestCase):
         texts = [path.node().getText() for path in self.ui.menu.findAllMatches("**/+TextNode")]
         self.assertIn("Off", texts)
 
+    def test_title_actions_and_text_fit_standard_and_narrow_aspects(self):
+        for aspect in (16 / 9, 4 / 3):
+            self.ui._aspect = lambda: aspect
+            self.ui._layout(force=True)
+            for has_save in (False, True):
+                self.ui.show_title(has_save)
+                buttons = [widget for widget in self.ui._menu_widgets
+                           if isinstance(widget, DirectButton)]
+                expected = {"new_game", "help", "settings", "quit"}
+                if has_save:
+                    expected.add("continue")
+                self.assertEqual({button["extraArgs"][0] for button in buttons}, expected)
+                for button in buttons:
+                    position = button.getPos(self.ui.root)
+                    left, right, bottom, top = button["frameSize"]
+                    with self.subTest(aspect=aspect, has_save=has_save, button=button["text"]):
+                        self.assertGreaterEqual(position.x + left, 0)
+                        self.assertLessEqual(position.x + right, self.ui.width)
+                        self.assertGreaterEqual(position.z + bottom, -self.ui.height)
+                        self.assertLessEqual(position.z + top, 0)
+                    before = len(self.calls)
+                    button["command"](*button["extraArgs"])
+                    self.assertEqual(len(self.calls), before + 1)
+                for path in self.ui.menu.findAllMatches("**/+TextNode"):
+                    if not path.node().getText():
+                        continue
+                    low, high = path.getTightBounds(self.ui.root)
+                    with self.subTest(aspect=aspect, title_text=path.node().getText()):
+                        self.assertGreaterEqual(low.x, 0)
+                        self.assertLessEqual(high.x, self.ui.width)
+                        self.assertGreaterEqual(low.z, -self.ui.height)
+                        self.assertLessEqual(high.z, 0)
+
+    def test_long_terminal_records_fit_and_disabled_actions_stay_disabled(self):
+        panel = {"id": "trade", "title": "Orbital Exchange", "tabs": [
+            {"label": title, "action": "open", "payload": key, "active": key == "inventory"}
+            for key, title in (("inventory", "CARGO"), ("craft", "FABRICATOR"),
+                               ("map", "NAVIGATION"), ("journal", "EXPEDITION"),
+                               ("build", "CONSTRUCTION"))], "rows": [
+            {"title": "Advanced environmental protection and recovery assembly",
+             "body": "A field repair assembly for expedition equipment. " * 7,
+             "meta": "In cargo 0  /  Buy 1,200 credits  /  Survey equipment",
+             "tag": "UNAVAILABLE", "buttons": [
+                 {"label": "BUY 5", "action": "buy", "payload": 5, "enabled": False},
+                 {"label": "BUY 1", "action": "buy", "payload": 1},
+                 {"label": "SELL 5", "action": "sell", "payload": 5}]}
+            for _ in range(5)]}
+        for aspect in (16 / 9, 4 / 3):
+            self.ui._aspect = lambda: aspect
+            self.ui._layout(force=True)
+            self.ui.show_panel(panel)
+            for row in self.ui.menu.findAllMatches("**/terminal-record-*"):
+                background = row.find("interface-gradient")
+                frame_low, frame_high = background.getTightBounds(row)
+                for label in row.findAllMatches("**/+TextNode"):
+                    low, high = label.getTightBounds(row)
+                    with self.subTest(aspect=aspect, row=row.getName(), text=label.node().getText()):
+                        self.assertGreaterEqual(low.x, frame_low.x)
+                        self.assertLessEqual(high.x, frame_high.x)
+                        self.assertGreaterEqual(low.z, frame_low.z)
+                        self.assertLessEqual(high.z, frame_high.z)
+            self.ui._scroll.verticalScroll["value"] = 0
+            self.ui._scroll_menu(5)
+            self.assertGreater(self.ui._scroll.verticalScroll["value"], 0)
+            disabled = next(widget for widget in self.ui._menu_widgets
+                            if isinstance(widget, DirectButton) and
+                            widget["extraArgs"][0] == "buy" and not widget["extraArgs"][2])
+            before = len(self.calls)
+            disabled["command"](*disabled["extraArgs"])
+            self.assertEqual(len(self.calls), before)
+
     def test_720p_hud_text_stays_inside_view_and_status_strip(self):
         self.assertEqual((self.app.win.getXSize(), self.app.win.getYSize()), (1280, 720))
         for mode in ("surface", "flight", "orbit"):

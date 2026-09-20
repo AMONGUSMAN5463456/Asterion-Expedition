@@ -1,0 +1,20 @@
+# Local Python environments and generated caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Local release builds, logs and operating-system metadata
+/releases/
+/build/
+/dist/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local save overrides and environment credentials
+/expedition.json*
+.env
+.env.*

@@ -186,17 +186,42 @@ def planet_texture(planet,clouds=True,width=512,height=256):
 
 @lru_cache(maxsize=8)
 def terrain_detail_texture(seed):
-    """Small repeating soil grain; world-coordinate UVs join across chunks."""
+    """Original layered soil, grit and eroded flecks with a periodic boundary.
+
+    Soft mineral clumps carry the middle frequencies; finer grain and small
+    embedded stones supply close detail. The eight cached 256px textures are
+    inexpensive on the CPU and use mipmaps/anisotropy instead of distant noise.
+    """
     rng=random.Random(int(seed)^0xA597)
-    width=128
+    width=256
+    periods=(4,11,29,67)
+    lattices=tuple(tuple(rng.random() for _ in range(p*p)) for p in periods)
+    def periodic(u,v,level):
+        period=periods[level]
+        table=lattices[level]
+        px,py=u*period,v*period
+        ix,iy=math.floor(px),math.floor(py)
+        fx,fy=px-ix,py-iy
+        fx,fy=fx*fx*(3-2*fx),fy*fy*(3-2*fy)
+        a=table[(iy%period)*period+(ix%period)]
+        b=table[(iy%period)*period+((ix+1)%period)]
+        c=table[((iy+1)%period)*period+(ix%period)]
+        d=table[((iy+1)%period)*period+((ix+1)%period)]
+        return (a*(1-fx)+b*fx)*(1-fy)+(c*(1-fx)+d*fx)*fy
     pixels=bytearray(width*width*3)
     for y in range(width):
         for x in range(width):
+            u,v=(x+.5)/width,(y+.5)/width
             grain=rng.random()
-            vein=math.sin(math.tau*(x*3+y*2)/width+1.8*math.sin(math.tau*y*4/width))
-            value=.76+.17*grain+.065*vein
-            if grain>.974:
-                value=.98
+            broad,medium,fine,grit=(periodic(u,v,k) for k in range(4))
+            clumps=_smooth(.48,.80,medium*.63+fine*.37)
+            # Grain follows broken clumps rather than a repeated band pattern.
+            seam=(1-_smooth(.012,.085,abs(fine-.48)))*.065
+            value=.54+.18*broad+.17*medium+.09*fine+.10*grain
+            value+=clumps*.085-seam
+            if grit>.77 and grain>.55:
+                value+=.10
+            value=max(.35,min(1.,value))
             i=(y*width+x)*3
             pixels[i:i+3]=bytes((int(value*255),)*3)
     texture=Texture(f"soil-grain-{seed}")
@@ -206,7 +231,45 @@ def terrain_detail_texture(seed):
     texture.setMagfilter(SamplerState.FTLinear)
     texture.setWrapU(SamplerState.WMRepeat)
     texture.setWrapV(SamplerState.WMRepeat)
-    texture.setAnisotropicDegree(4)
+    texture.setAnisotropicDegree(8)
+    texture.generateRamMipmapImages()
+    return texture
+
+
+@lru_cache(maxsize=8)
+def terrain_relief_texture(seed):
+    """A soft periodic height gradient; no screen derivatives of planet metres.
+
+    Differentiating a 20km body position in a fragment shader quantizes shallow
+    relief into visible rings. Baking a small tangent gradient avoids that
+    precision loss, and smoothing it keeps fine grit from sparkling in motion.
+    """
+    source=terrain_detail_texture(seed)
+    width=source.getXSize()
+    pixels=bytes(source.getRamImageAs("RGB"))[::3]
+    smooth=[]
+    for y in range(width):
+        for x in range(width):
+            total=sum(pixels[((y+dy)%width)*width+(x+dx)%width]
+                      for dy in (-1,0,1) for dx in (-1,0,1))
+            smooth.append(total/(9*255.))
+    data=bytearray(width*width*3)
+    for y in range(width):
+        for x in range(width):
+            dx=smooth[y*width+(x+1)%width]-smooth[y*width+(x-1)%width]
+            dy=smooth[((y+1)%width)*width+x]-smooth[((y-1)%width)*width+x]
+            i=(y*width+x)*3
+            data[i:i+3]=bytes((int(max(0.,min(1.,.5+dx*6.))*255),
+                              int(max(0.,min(1.,.5+dy*6.))*255),
+                              int(smooth[y*width+x]*255)))
+    texture=Texture(f"soil-relief-{seed}")
+    texture.setup2dTexture(width,width,Texture.TUnsignedByte,Texture.FRgb8)
+    texture.setRamImageAs(bytes(data),"RGB")
+    texture.setMinfilter(SamplerState.FTLinearMipmapLinear)
+    texture.setMagfilter(SamplerState.FTLinear)
+    texture.setWrapU(SamplerState.WMRepeat)
+    texture.setWrapV(SamplerState.WMRepeat)
+    texture.setAnisotropicDegree(8)
     texture.generateRamMipmapImages()
     return texture
 

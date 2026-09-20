@@ -23,15 +23,17 @@ sys.path.insert(0, str(ROOT))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, default=ROOT / 'docs' / 'validation-v1.3')
+    parser.add_argument('--output', type=Path, default=ROOT / 'docs' / 'validation-v1.4' / 'descents')
     parser.add_argument('--hardware', action='store_true', help='Use the native graphics driver')
     parser.add_argument('--scenario', help='Run one named scenario')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     from panda3d.core import NodePath, Vec3, loadPrcFileData
-    config = 'window-type offscreen\nwin-size 960 540\naudio-library-name null\nnotify-level error\nmodel-cache-dir'
+    config = 'window-type offscreen\nwin-size 960 540\naudio-library-name null\nnotify-level error\nmodel-cache-dir\ngl-version 3 2\nsync-video false'
     if not args.hardware:
-        config += '\nload-display p3tinydisplay'
+        config += '\nload-display p3tinydisplay\ntextures-power-2 up'
+    else:
+        config += '\ntextures-power-2 none'
     loadPrcFileData('descent-validation', config)
     from asterion import __version__
     from asterion.app import ExpeditionApp

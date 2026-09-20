@@ -11,16 +11,18 @@ import math
 import random
 from collections import OrderedDict
 
-from panda3d.core import (AmbientLight, DirectionalLight, Fog, Material, Quat,
+from panda3d.core import (AmbientLight, BitMask32, DirectionalLight, Fog, Material, Quat,
                           TransparencyAttrib, Vec3)
 
 from .collision import CollisionWorld, MoveResult, _number, _project, _vector
+from .celestial_sky import create_sky, create_starfield, create_sun, update_sky
 from .content import ITEMS
 from .geometry import (Mesh, building_mesh, crystal_mesh, fauna_mesh, flora_mesh,
                        grass_mesh, mix, outpost_mesh, rock_mesh, ruin_mesh,
                        station_mesh)
-from .planet_visuals import terrain_detail_texture
 from .planet_weather import PlanetWeather, fog_profile
+from .surface_materials import (configure_surface, terrain_albedo,
+                                update_surface_materials)
 from .planetary import (PlanetField, PlanetFrame, chart_direction, direction_chart,
                         _SKIN as _TERRAIN_SKIN,
                         frame_to_local, frame_to_world, vector_to_local,
@@ -75,8 +77,40 @@ def _tile_id(planet_id, key):
 
 def _lit(color, normal):
     incidence = max(0., Vec3(normal).dot(_SUN))
-    light = .37 + .63 * incidence ** .65
-    return tuple(min(1., max(0., c * light)) for c in color[:3])
+    sunlight = incidence ** .82
+    # Warm key light and blue skylight keep the software renderer dimensional
+    # too. This matches the desktop material's broad illumination response.
+    ambient, direct = (.43, .51, .59), (1.12, 1.02, .84)
+    lit = tuple(min(1., max(0., color[i] * (ambient[i] + direct[i] * sunlight)))
+                for i in range(3))
+    return lit + ((color[3],) if len(color) > 3 else ())
+
+
+def _ground_cover_mesh(flora, ground, accent, seed):
+    """Small curved sedges, batched as sparse islands of understory."""
+    rng=random.Random(seed)
+    mesh=Mesh()
+    root_color=mix(flora,ground,.63)
+    tip_color=mix(mix(flora,(.48,.51,.28),.35),accent,.09)
+    for index in range(7):
+        angle=index*2.399963+rng.uniform(-.24,.24)
+        ca,sa=math.cos(angle),math.sin(angle)
+        h=rng.uniform(.17,.39)
+        length=rng.uniform(.23,.53)
+        width=rng.uniform(.033,.065)
+        base=(ca*.055,sa*.055,.008)
+        middle=(ca*length*.52,sa*length*.52,h*.83)
+        tip=(ca*length,sa*length,h)
+        a=(middle[0]-sa*width,middle[1]+ca*width,middle[2])
+        b=(middle[0]+sa*width,middle[1]-ca*width,middle[2])
+        ridge=(middle[0],middle[1],middle[2]+width*.18)
+        mesh.tri(base,a,ridge,root_color,colors=(root_color,tip_color,tip_color),
+                 texcoords=((0,0),(.7,0),(.7,0)))
+        mesh.tri(base,ridge,b,root_color,colors=(root_color,tip_color,tip_color),
+                 texcoords=((0,0),(.7,0),(.7,0)))
+        mesh.tri(a,tip,ridge,tip_color,texcoords=((.7,0),(1,0),(.7,0)))
+        mesh.tri(ridge,tip,b,tip_color,texcoords=((.7,0),(1,0),(.7,0)))
+    return mesh
 
 
 class SeamlessWorld:
@@ -84,6 +118,7 @@ class SeamlessWorld:
 
     def __init__(self, app):
         self.app = app
+        self._gpu = bool(getattr(getattr(app, "visuals", None), "gpu", False))
         self.root = None
         self.sky_root = None
         self.system = self.state = self.planet = self.frame = None
@@ -130,6 +165,8 @@ class SeamlessWorld:
         self.system, self.state = system, state
         self._merge_depletion(state)
         self.root = self.app.render.attachNewNode("persistent-solar-system")
+        self.root.setShaderInput("ae_fog_color", .32, .56, .72)
+        self.root.setShaderInput("ae_fog_density", 0.)
         material = Material("survey-matte")
         material.setShininess(0)
         material.setSpecular((0, 0, 0, 1))
@@ -145,20 +182,25 @@ class SeamlessWorld:
             self.root.setLight(light)
         self.sky_root = self.root.attachNewNode("fixed-celestial-directions")
         self.sky_root.setFogOff(10)
-        self._stars = WorldRenderer._starfield(self, int(system["id"]) * 773 + 47, 850)
+        self.sky_root.hide(BitMask32.bit(1))
+        self._stars = create_starfield(self.sky_root, int(system["id"]) * 773 + 47, 1800)
         self._make_sky()
         # These are distant directions, translated with the observer each frame.
-        WorldRenderer._disc(self, "system-star", tuple(_SUN * 14000), 185,
-                            (*system["star_color"], 1))
+        create_sun(self.sky_root, _SUN, system["star_color"])
         for planet in system["planets"]:
             field = self.fields[planet["id"]] = PlanetField(planet)
             body = self.root.attachNewNode("body-" + planet["id"])
             body.setPos(*planet["position"])
             self.body_roots[planet["id"]] = body
+            if self._gpu:
+                update_surface_materials(body, field, (0.,0.,0.), 0.)
             self._make_globe(field, body)
             self._make_atmosphere(field, body)
         self._make_space_content(system)
         self.set_frame(None)
+        visuals = getattr(self.app, "visuals", None)
+        if visuals is not None:
+            visuals.bind_world(self)
 
     def _merge_depletion(self, state):
         for identifiers in getattr(state, "depleted", {}).values():
@@ -273,7 +315,7 @@ class SeamlessWorld:
         if sample is None:
             direction = _direction_components(face, x, y, field.radius)
             height = field.elevation(direction)
-            sample = (direction, height, field.color(direction))
+            sample = (direction, height, terrain_albedo(field, direction))
             self._sample_cache[key] = sample
             if len(self._sample_cache) > 65000:
                 for _ in range(8000):
@@ -309,7 +351,7 @@ class SeamlessWorld:
                 if normal.lengthSquared() < 1e-12:
                     normal = Vec3(*radial)
                 normal.normalize()
-                row.append((position, tuple(normal), _lit(color, normal),
+                row.append((position, tuple(normal), color if self._gpu else _lit(color, normal),
                             ((x0 + dx * i) / 12, (y0 + dy * j) / 12), radial))
             rows.append(row)
         for j in range(resolution):
@@ -350,10 +392,7 @@ class SeamlessWorld:
         node = mesh.node(f"spherical-terrain-{face}-{level}-{ix}-{iy}",
                          self.body_roots[field.planet["id"]], unlit=True)
         node.setPos(*origin)
-        seed = int(field.planet["seed"])
-        if seed not in self._detail_textures:
-            self._detail_textures[seed] = terrain_detail_texture(seed)
-        node.setTexture(self._detail_textures[seed], 20)
+        configure_surface(node, field, origin, gpu=self._gpu)
         cone = max(math.acos(max(-1., min(1., sum(a * b for a, b in zip(normal,
             _direction_components(face, xx, yy, field.radius))))))
             for xx, yy in ((x, y), (x + size, y), (x + size, y + size), (x, y + size)))
@@ -555,6 +594,7 @@ class SeamlessWorld:
 
     def _models(self, planet):
         seed = int(planet["seed"])
+        self._model_cache.clear()
         self._style = STYLES.get(planet["biome"], "fan")
         self._tree_models = [flora_mesh(self._style, planet["flora"], planet["accent"], seed + i)
                              for i in range(3)]
@@ -562,6 +602,30 @@ class SeamlessWorld:
                               for i in range(3)]
         self._rock_models = [rock_mesh(mix(planet["ground"], (.32, .35, .38), .40), seed + i * 77)
                             for i in range(3)]
+        self._cover_models = [_ground_cover_mesh(planet["flora"],planet["ground"],
+                               planet["accent"],seed+i*83) for i in range(3)]
+        self._pebble_models=[]
+        for i in range(3):
+            pebble=Mesh()
+            pebble.sphere((0.,0.,.05),(.19,.12,.10),
+                mix(planet["ground"],(.49,.44,.36),.57),7,4,.32,seed+i*57,
+                smooth=True)
+            self._pebble_models.append(pebble)
+        # Build vertex buffers only once. Each streamed chunk is combined by
+        # Panda's native scene reducer instead of transforming millions of
+        # individual vertices through Python at every boundary crossing.
+        for category in ("tree","grass","rock","cover","pebble"):
+            models=getattr(self,"_"+category+"_models")
+            self._model_cache[category]=[
+                mesh.node("scenery-template-"+category,two_sided=True)
+                for mesh in models]
+        # Pay the small, bounded art upload cost while preparing the planet,
+        # rather than stopping a walking frame for a new resource silhouette.
+        for resource in planet["resources"]:
+            for variant in range(5):
+                self._resource_template(resource,variant)
+        for variant in range(3):
+            self._fauna_template(variant)
 
     def _clear_surface(self):
         for key in tuple(self.chunks):
@@ -716,20 +780,50 @@ class SeamlessWorld:
         for identifier, records in self._surface_groups.items():
             self._refresh_surface_group(identifier, records)
 
-    def _append_decor(self, target, source, geo, scale=1, heading=0):
+    def _append_decor(self, target, source, geo, scale=1, heading=0,
+                      origin_offset=(0.,0.,0.)):
         field = self.fields[self.planet["id"]]
         direction = chart_direction(geo[0], geo[1], field.radius)
         tangent = PlanetFrame.from_planet(self.planet, direction)
         ca, sa = math.cos(math.radians(heading)), math.sin(math.radians(heading))
         right = tangent.right * ca + tangent.north * sa
         north = tangent.north * ca - tangent.right * sa
-        up, origin = tangent.normal, direction * (field.radius + geo[2])
+        up = tangent.normal
+        origin = tuple(float(direction[k])*(field.radius+geo[2])-origin_offset[k]
+                       for k in range(3))
         axes = (tuple(right), tuple(north), tuple(up))
-        for vertex, normal, color in zip(source.vertices, source.normals, source.colors):
-            target.vertices.append(tuple(origin[k] + scale * sum(vertex[j] * axes[j][k] for j in range(3))
-                                         for k in range(3)))
-            target.normals.append(tuple(sum(normal[j] * axes[j][k] for j in range(3)) for k in range(3)))
-            target.colors.append(color)
+        # Texcoord.x is a botanical flexibility weight for the scene shader.
+        # Preserve it through batching; inert stones explicitly carry zero.
+        if source.texcoords and not target.texcoords:
+            target.texcoords.extend(((0.,0.),)*len(target.vertices))
+        if target.texcoords or source.texcoords:
+            target.texcoords.extend(source.texcoords or ((0.,0.),)*len(source.vertices))
+        rx,ry,rz=axes[0]
+        nx,ny,nz=axes[1]
+        ux,uy,uz=axes[2]
+        ox,oy,oz=origin
+        for (x,y,z),(a,b,c) in zip(source.vertices,source.normals):
+            target.vertices.append((ox+scale*(x*rx+y*nx+z*ux),
+                                    oy+scale*(x*ry+y*ny+z*uy),
+                                    oz+scale*(x*rz+y*nz+z*uz)))
+            target.normals.append((a*rx+b*nx+c*ux,a*ry+b*ny+c*uy,a*rz+b*nz+c*uz))
+        target.colors.extend(source.colors)
+
+    def _instance_decor(self, parent, category, variant, geo, scale, heading,
+                         origin_offset):
+        """Place a shared vertex buffer in the chunk's precise local frame."""
+        source=self._model_cache[category][variant%3]
+        node=source.copyTo(parent)
+        field=self.fields[self.planet["id"]]
+        direction=chart_direction(geo[0],geo[1],field.radius)
+        tangent=PlanetFrame.from_planet(self.planet,direction)
+        node.setPos(*(float(direction[k])*(field.radius+geo[2])-origin_offset[k]
+                      for k in range(3)))
+        rotation=Quat()
+        rotation.setHpr(Vec3(heading,0,0))
+        node.setQuat(rotation*tangent.rotation)
+        node.setScale(scale)
+        return node
 
     def _in_clearance(self, geo, padding=0):
         u, v = geo[:2]
@@ -757,7 +851,11 @@ class SeamlessWorld:
                   and center[2] > field.planet["water_level"] + 1)
         def clearance(geo, padding=0):
             return self._in_clearance(geo, padding) or (remote and math.hypot(geo[0] - center[0], geo[1] - center[1]) < 14 + padding)
-        decor, shapes = Mesh(), []
+        decor=root.attachNewNode("batched-local-flora-and-stones")
+        shapes = []
+        center_direction=chart_direction(center[0],center[1],field.radius)
+        decor_origin=tuple(float(c)*(field.radius+center[2]) for c in center_direction)
+        decor.setPos(*decor_origin)
         abundance = .6 if self.planet["biome"] in ("desert", "volcanic", "frozen") else 1.
         for i in range(int(12 * abundance)):
             geo = location()
@@ -766,24 +864,24 @@ class SeamlessWorld:
             scale, heading = rng.uniform(.75, 1.8), rng.uniform(0, 360)
             if self._style == "mushroom":
                 scale *= 1.25
-            self._append_decor(decor, self._tree_models[i % 3], geo, scale, heading)
+            self._instance_decor(decor,"tree",i,geo,scale,heading,decor_origin)
             shapes.extend(self._shape_records(prefix + f":tree{i}",
                 _flora_shapes(self._style, int(self.planet["seed"]) + i % 3), geo, heading, scale))
         for i in range(int(34 * abundance)):
             geo = location()
             if clearance(geo) or geo[2] < field.planet["water_level"]:
                 continue
-            self._append_decor(decor, self._grass_models[i % 3], geo, rng.uniform(.65, 1.7), rng.uniform(0, 360))
+            self._instance_decor(decor,"grass",i,geo,rng.uniform(.65,1.7),rng.uniform(0,360),decor_origin)
         for i in range(9):
             geo = location()
             if clearance(geo):
                 continue
             scale, heading = rng.uniform(.4, 1.7), rng.uniform(0, 360)
-            self._append_decor(decor, self._rock_models[i % 3], geo, scale, heading)
+            self._instance_decor(decor,"rock",i,geo,scale,heading,decor_origin)
             if scale > .62:
                 shapes.extend(self._shape_records(prefix + f":rock{i}",
                     [_cylinder("stone", (.12, 0, .53), .84, 1.35)], geo, heading, scale))
-        decor.node("batched-local-flora-and-stones", root, two_sided=True)
+        decor.flattenStrong()
         self._set_surface_group(group, shapes)
         for i in range(7):
             geo = location(.13)
@@ -805,32 +903,74 @@ class SeamlessWorld:
             self._structure(identifier, kind, center, (seed % 4) * 90, root,
                             "Remote survey exchange" if kind == "outpost" else "Meridian listening halo")
             ids.append(identifier)
+        # An isolated random stream adds visual ground cover without shifting
+        # any pre-existing resource, animal, tree or saved-world identity.
+        micro_rng=random.Random(seed^0xC0FE146)
+        cover=root.attachNewNode("batched-low-ground-cover")
+        cover.setPos(*decor_origin)
+        quality=getattr(self.state,"settings",{}).get("quality","medium")
+        cover_count={"low":64,"medium":144,"high":192,"ultra":256}.get(quality,144)
+        vegetation=field.biome not in ("volcanic","frozen","desert")
+        cluster=None
+        for i in range(cover_count if vegetation else cover_count//5):
+            if i%5==0:
+                cluster=(micro_rng.uniform(x0,x1),micro_rng.uniform(y0,y1))
+            x=max(x0,min(x1,cluster[0]+micro_rng.uniform(-2.2,2.2)))
+            y=max(y0,min(y1,cluster[1]+micro_rng.uniform(-2.2,2.2)))
+            geo=self._geo(_direction(face,x,y,field.radius))
+            if clearance(geo,.4) or geo[2]<field.water_level+.5:
+                continue
+            self._instance_decor(cover,"cover",i,geo,
+                micro_rng.uniform(.64,1.45),micro_rng.uniform(0,360),decor_origin)
+        for i in range(18):
+            geo=self._geo(_direction(face,micro_rng.uniform(x0,x1),
+                                     micro_rng.uniform(y0,y1),field.radius))
+            if clearance(geo,.2) or geo[2]<field.water_level+.15:
+                continue
+            self._instance_decor(cover,"pebble",i,geo,
+                micro_rng.uniform(.45,1.1),micro_rng.uniform(0,360),decor_origin)
+        cover.flattenStrong()
+
+    def _resource_template(self, resource, seed):
+        """One immutable art buffer; variation is independent of visit order."""
+        key=("resource",resource,seed%5)
+        if key not in self._model_cache:
+            color=ITEMS.get(resource,{}).get("color",self.planet["accent"])
+            visual_seed=int(self.planet["seed"])+sum(ord(c) for c in resource)*131+key[2]*977
+            if resource == "carbon":
+                mesh=flora_mesh(self._style,self.planet["flora"],self.planet["accent"],visual_seed)
+            elif resource in ("oxygen","sodium"):
+                mesh=flora_mesh("succulent",mix(color,self.planet["flora"],.3),color,visual_seed)
+            elif resource in ("crystal","cobalt","silicon","copper"):
+                mesh=crystal_mesh(color,visual_seed)
+            else:
+                mesh=rock_mesh(mix(color,self.planet["ground"],.4),visual_seed)
+            self._model_cache[key]=mesh.node("resource-"+resource,two_sided=True)
+        return self._model_cache[key]
 
     def _resource(self, identifier, resource, geo, seed, parent):
         if identifier in self._depleted:
             return False
         rng = random.Random(seed)
-        color = ITEMS.get(resource, {}).get("color", self.planet["accent"])
         plant = resource in ("carbon", "oxygen", "sodium")
         if resource == "carbon":
             scale, radius, amount, hardness = .6, 1.7, 18 + rng.randrange(15), 1.1
-            mesh = flora_mesh(self._style, self.planet["flora"], self.planet["accent"], seed, scale)
             shapes = _flora_shapes(self._style, seed)
         elif resource in ("oxygen", "sodium"):
             scale, radius, amount, hardness = .4, 1., 10 + rng.randrange(9), .75
-            mesh = flora_mesh("succulent", mix(color, self.planet["flora"], .3), color, seed, scale)
             shapes = _flora_shapes("succulent", seed)
         elif resource in ("crystal", "cobalt", "silicon", "copper"):
             scale = .6 + rng.random() * .35
-            mesh = crystal_mesh(color, seed, scale)
             shapes = [_cylinder("deposit", (0, 0, 1.15), .73, 2.3)]
             radius, amount, hardness = 1.7, 12 + rng.randrange(17), 1.6
         else:
             scale = 1 + rng.random() * .3
-            mesh = rock_mesh(mix(color, self.planet["ground"], .4), seed, scale)
             shapes = [_cylinder("deposit", (.12, 0, .56), .91, 1.4)]
             radius, amount, hardness = 1.65, 20 + rng.randrange(16), 1.25
-        node = mesh.node("resource-" + resource, parent, two_sided=True)
+        # Preserve all gameplay RNG draws above. A bounded, deterministic set
+        # of art variants shares the expensive mesh buffers during streaming.
+        node=self._resource_template(resource,seed).copyTo(parent)
+        node.setScale(scale)
         heading = rng.uniform(0, 360)
         self._pose(node, geo, heading)
         self._register(identifier, node, geo, "flora" if plant else "mineral",
@@ -843,19 +983,29 @@ class SeamlessWorld:
         return True
 
     def _structure(self, identifier, kind, geo, heading, parent, name):
-        meshes = outpost_mesh(self.planet["accent"]) if kind == "outpost" else ruin_mesh(self.planet["accent"])
         node = parent.attachNewNode(kind)
-        meshes[0].node(kind + "-structure", node, two_sided=True)
-        meshes[1].node(kind + "-signals", node, two_sided=True, unlit=True)
+        key=("structure",kind)
+        if key not in self._model_cache:
+            meshes = outpost_mesh(self.planet["accent"]) if kind == "outpost" else ruin_mesh(self.planet["accent"])
+            self._model_cache[key]=(meshes[0].node(kind+"-structure",two_sided=True),
+                                    meshes[1].node(kind+"-signals",two_sided=True,unlit=True))
+        for template in self._model_cache[key]:
+            template.copyTo(node)
         self._pose(node, geo, heading)
         self._register(identifier, node, geo, kind, name, 11, _offset=1.4)
         self._set_surface_group(identifier, self._shape_records(identifier, _structure_shapes(kind), geo, heading))
 
+    def _fauna_template(self, seed):
+        key=("fauna",seed%3)
+        if key not in self._model_cache:
+            self._model_cache[key]=fauna_mesh(mix(self.planet["flora"],(.7,.66,.47),.45),
+                    self.planet["accent"],seed%3).node("lantern-grazer",two_sided=True)
+        return self._model_cache[key]
+
     def _make_fauna(self, identifier, geo, seed, parent):
         rng = random.Random(seed)
         size, heading = rng.uniform(.75, 1.3), rng.uniform(0, 360)
-        node = fauna_mesh(mix(self.planet["flora"], (.7, .66, .47), .45),
-                          self.planet["accent"], seed).node("lantern-grazer", parent, two_sided=True)
+        node=self._fauna_template(seed).copyTo(parent)
         node.setScale(size)
         self._pose(node, geo, heading)
         names = ("Lantern grazer", "Ribbon drifter", "Prism shellback")
@@ -926,24 +1076,11 @@ class SeamlessWorld:
 
     def _make_sky(self):
         """A radial sky backdrop; distant star directions remain system-fixed."""
-        mesh = Mesh()
-        def tint(normal):
-            horizon = math.exp(-abs(normal[2]) * 3.8)
-            light = .38 + .62 * horizon if normal[2] >= 0 else .25 + .75 * horizon
-            return (light * .80, light * .92, light, 1)
-        mesh.sphere((0, 0, 0), (9000,) * 3, (1, 1, 1), 48, 24,
-                    color_fn=tint, smooth=True)
-        self._sky_dome = mesh.node("continuous-radial-sky", self.sky_root,
-                                   two_sided=True, unlit=True)
-        self._sky_dome.setBin("background", 0)
-        self._sky_dome.setDepthWrite(False)
-        self._sky_dome.setDepthTest(False)
-        self._sky_dome.setTransparency(TransparencyAttrib.MAlpha)
-        self._sky_dome.setColorScale(1, 1, 1, 0)
+        self._sky_dome = create_sky(self.sky_root, self._gpu)
 
     def _make_atmosphere(self, field, body):
         """Depth-bearing cloud weather and atmospheric limb share this body."""
-        weather = self._weather[field.planet_id] = PlanetWeather(field, body)
+        weather = self._weather[field.planet_id] = PlanetWeather(field, body, gpu=self._gpu)
         self._clouds[field.planet_id] = weather.clouds
         self._limbs[field.planet_id] = weather.limb
 
@@ -981,7 +1118,8 @@ class SeamlessWorld:
         daylight = .22 + .78 * max(0., normal.dot(_SUN)) ** .55
         tone = tuple(c * (1 - storm * .35) * daylight for c in nearest.planet["sky"][:3])
         self._sky_dome.setQuat(PlanetFrame.from_planet(nearest.planet, normal).rotation)
-        self._sky_dome.setColorScale(*tone, sky_alpha)
+        sun_local = self._sky_dome.getQuat().conjugate().xform(_SUN)
+        update_sky(self._sky_dome, tone, sky_alpha, sun_local, daylight, elapsed)
         self._stars.setColorScale(1, 1, 1, 1 - sky_alpha * (.35 + .65 * daylight))
         # Fog fades with the same continuous density as the backdrop. Distant
         # bodies remain in this scene and naturally reappear during ascent.
@@ -990,6 +1128,11 @@ class SeamlessWorld:
         fog_color, fog_density = fog_profile(data, tone, local_cloud, storm)
         self._fog.setColor(*fog_color[:3])
         self._fog.setExpDensity(fog_density)
+        self.root.setShaderInput("ae_fog_color", *fog_color[:3])
+        self.root.setShaderInput("ae_fog_density", float(fog_density))
+        if self._gpu:
+            for field in self.fields.values():
+                update_surface_materials(self.body_roots[field.planet_id], field, observer, elapsed)
         if fog_density > 0:
             self.root.setFog(self._fog)
         else:

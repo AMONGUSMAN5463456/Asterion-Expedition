@@ -1,120 +1,115 @@
-# Validation report — Asterion Expedition 1.3.0
+# Validation report — Asterion Expedition 1.4.0 / Celestial
 
-Release validation: 17 September 2026. Host: Apple Silicon, macOS 26.3.1,
-CPython 3.12.14 and the pinned Panda3D 1.10.16 runtime. Tests use disposable
-save directories; the normal player expedition was not opened or modified.
+Release validation: 20 September 2026. Native graphics were rendered on an
+Apple M4, macOS 27.0, CPython 3.12.14 and Panda3D 1.10.16. Every gameplay
+validation used a disposable save directory; the normal player save was not
+opened or modified.
 
-## Actual hardware descents
+## Graphics and interface
 
-Five descents drove the real ExpeditionApp controller and collision system
-from **7,000 m above the surface at 900 m/s**, with native Cocoa/OpenGL
-hardware rendering. After each scenario's starting pose, movement used normal
-application ticks, reframing and swept collisions. No position teleport or
-surface loader was used during the descent. Solar and planet scene roots
-remained unchanged, no entry fade occurred, and both orbit and flight modes
-were traversed. Each flight also saved and validated its in-air momentum.
+The [native graphics capture](validation-v1.4/graphics-report.json) includes the
+title, surface HUD, seven gameplay panels, cockpit/orbit and all eight biomes.
+It uses the production OpenGL pipeline: physical-scale terrain detail, animated
+ocean shading, filtered sun shadows, moving vegetation, atmospheric sky and
+cloud banks, HDR scene buffer, selective bloom and edge smoothing. The shadow
+comparison includes an otherwise identical unshadowed surface view.
+
+The [detail gallery](validation-v1.4/details/) photographs the production courier,
+outpost, ruin, field buildings, wildlife, mineral extraction, survey pulse and
+orbital station. These use inspection camera poses in an isolated expedition.
+None of the screenshots is retouched or composited.
+
+The interface validator rendered **20 screens at each of 1280 × 720 and
+960 × 540**, and checked native text bounds, including scrollable records.
+It covers both title states, 15 panels, and surface/flight/orbit HUDs.
+[1280 report](validation-v1.4/ui/validation-1280x720.json) ·
+[960 report](validation-v1.4/ui/validation-960x540.json).
+The final font check removed glyph-atlas artifacts on the Mac core profile.
+UI typography renders after scene postprocessing.
+
+## Gameplay and regression checks
+
+All **295 regression tests passed**, with each module in its own process to
+isolate Panda3D global state. The complete run took 340.1 seconds with three
+workers. The affected interface, surface-material, geometry, graphics and packaging modules were
+rerun after the last typography, palette and renderer-configuration corrections:
+all **54 checks passed**. Results are in the
+[regression report](validation-v1.4/regression-report.json).
+
+Coverage includes collision and movement, high-speed planet sweeps, ocean
+contact, cube seams and poles, terrain refinement, cloud depth/occlusion,
+streaming, navigation, mining, crafting, construction, progression, save/load
+and migration, UI actions, launchers, fonts and audio assets. Graphics-specific
+checks include bounded effect lifetimes, exact preservation of procedural
+resource IDs/positions/amounts, and reuse of prepared model buffers while
+streaming. Terrain collision and saved-world scale remain unchanged.
+
+The software-rendered gameplay smoke test passed **25 checks**, including
+mining, scanning, crafting, boarding, a physical automatic interplanetary
+approach, landing, saving, reloading and trading.
+[Smoke result](validation-v1.4/smoke-report.json).
+
+## Native physical descents
+
+The final build completed **five physical descents from 7,000 m at 900 m/s**.
+Only the initial camera/controller pose was assigned; the rest used ordinary
+app updates, frame changes and swept collisions. Solar and planet roots stayed
+unchanged, there was no entry fade, both flight/orbit modes were traversed, and
+each scenario validated saved in-air momentum.
 
 | Scenario | Surface | Hull clearance at contact | Result |
 | --- | --- | --- | --- |
-| talora-land | land | 3.0248 m | F touchdown to walking |
-| deep-ocean | ocean | 3.0293 m | Hull contact |
-| far-hemisphere | land | 3.0262 m | Hull contact |
-| north-pole | land | 3.0294 m | Hull contact |
-| south-pole | land | 3.0235 m | Hull contact |
+| Talora | Land | 3.0248 m | Normal F touchdown to walking |
+| Deep ocean | Ocean | 3.0293 m | Hull contact |
+| Far hemisphere | Land | 3.0262 m | Hull contact |
+| North pole | Land | 3.0294 m | Hull contact |
+| South pole | Land | 3.0235 m | Hull contact |
 
-All five reached contact in 7.8 simulated seconds. The largest per-tick travel
-was approximately 30 m, matching 900 m/s at a 30 Hz app tick. The ship collider
-has a 3 m radius. Talora's normal F landing then parked the ship and returned
-to walking; its final frame shows the on-foot tool and HUD.
+Every descent reached contact in 7.8 simulated seconds, with at most 30 m of
+travel per tick, consistent with the controller's 3 m hull and 30 Hz update.
+The [descent report](validation-v1.4/descents/descent-report.json) records
+actual capture altitudes and frame numbers for 46 screenshots. The final
+night-side inspection verifies that surface props receive their planet's
+sun occlusion rather than remaining brightly lit over dark ground.
 
-[Machine-readable descent measurements](validation-v1.3/descent-report.json)
-and 46 rendered images are included. Filename altitudes are capture thresholds;
-the JSON records actual altitude and frame number. Representative views:
+## Performance and limits
 
-- [Talora from orbit](validation-v1.3/talora-land-6900m.png)
-- [Inside the home cloud bank](validation-v1.3/talora-land-0650m.png)
-- [Below the clouds](validation-v1.3/talora-land-0120m.png)
-- [Deep-ocean hull contact](validation-v1.3/deep-ocean-0005m.png)
-- [Completed on-foot touchdown](validation-v1.3/talora-touchdown.png)
+At 1280 × 720, the warm, fully populated surface measured **28.32 ms median**
+and **31.96 ms p95** over 45 update-and-render frames (roughly 35 frames/s at
+the median). This includes hardware effects, 81 loaded chunks and no queued
+chunks. Median app update was 17.93 ms; median render submission was 10.2 ms.
+These component medians need not sum to the total median. Startup to the
+prepared title scene took 9.29 seconds.
 
-Native startup images were also inspected. Balanced terrain refinement removed
-a rectangular coarse/fine skirt visible at the ground horizon. A separate review
-of 12 hardware captures confirmed that crossed cloud strips and orbital depth
-speckling are absent. Cloud haze is localized to actual banks and clears below
-them; oceans and far-side approaches have clear air outside those volumes.
+Physical descents measured median app updates of 13–20 ms and p95 updates of
+75–86 ms while new geography and props streamed. Those descent measurements
+exclude most rendered frames and are not an FPS estimate. Streaming can
+still cause brief stalls. This is a stylized procedural game, not a claim of
+photorealism, ray tracing, or a locked 60 FPS.
 
-## Regression and gameplay checks
+Native OpenGL graphics were checked on this Mac. TinyDisplay retains the
+improved geometry, textures and interface, with baked shading in place of
+GPU effects. The 960 × 540 software capture took about 193 ms per warm frame;
+it is a slow compatibility path. Other GPU/driver combinations and Windows/Linux desktop input
+and hardware audio were not manually verified.
 
-All **276 tests passed** in the final release run (166.8 seconds wall time). The run executes every test module in a
-fresh Python process, using three workers; this isolates Panda3D global font
-and graphics state between modules. Per-module counts, times and pass/fail
-results are in the [regression report](validation-v1.3/regression-report.json).
-The equivalent standard discovery command is:
+## Reproduction and release
 
-```sh
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-Coverage includes:
-
-- Shared land/ocean elevation, high-speed sweeps, both poles, cube seams,
-  steep coastal banks, underwater recovery and non-solid atmosphere.
-- Complete globe coverage, balanced neighboring detail levels, atomic child
-  swaps, orbital refinement before frame changes and near-ground mesh accuracy.
-- Fixed 3D cloud positions, finite cloud depth, parallax, cloud-density continuity,
-  planetary occlusion, software rendering and bounded object counts.
-- Actual app ascent/descent, automatic approach and landing, flight cancellation,
-  save/load, held-input/attitude preservation, mining depletion and construction.
-- Cargo, crafting, trade, survival, story, contracts, navigation, controls,
-  collision with props/buildings, interface, launchers, fonts and audio assets.
-- Save versions 1–4 migrating into schema 5 once; flight altitude/momentum,
-  nearby distant bases, antipodal bases, parked-ship hemispheres, station
-  clearance, large coordinates and atomic backup failure behavior.
-- Entry detail starts at the live ship position rather than a stale autosave
-  position, avoiding ground-detail initialization during an orbital approach.
-
-The built-in smoke test passed **25 checks**, including mining, crafting,
-boarding, a physical automatic interplanetary approach, landing, saving,
-reloading and trading. Its [JSON result](validation-v1.3/smoke-report.json)
-is included. Reproduce with:
+Run from the extracted source folder with its prepared interpreter:
 
 ```sh
-.venv/bin/python main.py --smoke-test --software --no-audio
+.venv/bin/python tools/run_regressions.py
+.venv/bin/python tools/validate_graphics.py
+.venv/bin/python tools/validate_interface.py --renderer gl --size 1280 720
+.venv/bin/python tools/validate_interface.py --renderer gl --size 960 540
 .venv/bin/python tools/validate_descents.py --hardware
+.venv/bin/python tools/validate_art_details.py
+.venv/bin/python main.py --smoke-test --software --no-audio
+.venv/bin/python tools/build_release.py
 ```
 
-Omit `--hardware` to run descent capture through Panda3D TinyDisplay. Python
-compilation and POSIX launcher syntax checks also passed.
-
-## Save and release integrity
-
-Schema 5 stores `world_scale: 96`. Original saves are retained once as
-`expedition.json.pre-v1.3.bak`; if creating that archive fails, the original
-primary is not replaced. The rolling `.bak` backup still operates normally.
-Home bases retain metre coordinates; nearby remote construction stays near the
-saved frame and all constructed nodes are placed on current land/water elevation.
-Cargo, credits, upgrades, discoveries, depletion IDs and progression remain.
-Expanded remote procedural scenery can change deposit placement/availability.
-
-The source ZIP has a single `asterion-expedition-v1.3.0/` root. Its builder
-verifies ZIP CRCs and every SHA-256 manifest entry and writes an external ZIP
-checksum. Virtual environments, Python caches, player saves, local logs and
-previous release ZIPs are excluded. Launch script executable permissions are
-included. The extracted archive is checked independently before delivery.
-
-## Measured limits
-
-These are automated real-app flights and rendered frames, not a manual keyboard
-playthrough. Native hardware graphics were checked on this Mac; Windows/Linux
-desktop input, hardware audio and other GPU/driver combinations are unverified.
-
-The native descent run measured median app update times of roughly 9–14 ms,
-with 95th-percentile updates of roughly 68–154 ms while new detail/props streamed.
-These numbers exclude most display frames and do not establish a desktop frame
-rate. Streaming can still cause brief stalls. A fresh scene prepares terrain
-before showing the player and can take several seconds.
-
-The game remains a stylized source distribution requiring Python and a first-run
-Panda3D download. Water supports surface contact; there is no swimming, seabed
-exploration, caves, overhangs or ray-traced atmosphere. Cloud banks are textured
-billboards arranged at fixed spatial depths with matching local-density samples.
+The source archive has a single `asterion-expedition-v1.4.0/` root and includes
+bundled font licenses. The builder verifies ZIP CRCs and each SHA-256 manifest
+entry and writes an external archive checksum. Virtual environments, caches,
+player saves, local logs and previous release archives are excluded. macOS and
+Linux launcher executable permissions are preserved.

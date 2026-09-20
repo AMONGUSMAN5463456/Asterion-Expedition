@@ -1,0 +1,110 @@
+{
+  "size": [
+    960,
+    540
+  ],
+  "renderer": "Apple M4",
+  "screens": [
+    {
+      "screen": "title",
+      "checked_text_nodes": 18,
+      "image": "title-960x540.png"
+    },
+    {
+      "screen": "title-continue",
+      "checked_text_nodes": 18,
+      "image": "title-continue-960x540.png"
+    },
+    {
+      "screen": "inventory",
+      "checked_text_nodes": 54,
+      "image": "inventory-960x540.png"
+    },
+    {
+      "screen": "craft",
+      "checked_text_nodes": 98,
+      "image": "craft-960x540.png"
+    },
+    {
+      "screen": "map",
+      "checked_text_nodes": 30,
+      "image": "map-960x540.png"
+    },
+    {
+      "screen": "galaxy",
+      "checked_text_nodes": 106,
+      "image": "galaxy-960x540.png"
+    },
+    {
+      "screen": "journal",
+      "checked_text_nodes": 82,
+      "image": "journal-960x540.png"
+    },
+    {
+      "screen": "discoveries",
+      "checked_text_nodes": 13,
+      "image": "discoveries-960x540.png"
+    },
+    {
+      "screen": "contracts",
+      "checked_text_nodes": 22,
+      "image": "contracts-960x540.png"
+    },
+    {
+      "screen": "build",
+      "checked_text_nodes": 50,
+      "image": "build-960x540.png"
+    },
+    {
+      "screen": "trade",
+      "checked_text_nodes": 114,
+      "image": "trade-960x540.png"
+    },
+    {
+      "screen": "settings",
+      "checked_text_nodes": 42,
+      "image": "settings-960x540.png"
+    },
+    {
+      "screen": "help",
+      "checked_text_nodes": 34,
+      "image": "help-960x540.png"
+    },
+    {
+      "screen": "pause",
+      "checked_text_nodes": 18,
+      "image": "pause-960x540.png"
+    },
+    {
+      "screen": "rescue",
+      "checked_text_nodes": 9,
+      "image": "rescue-960x540.png"
+    },
+    {
+      "screen": "reload",
+      "checked_text_nodes": 9,
+      "image": "reload-960x540.png"
+    },
+    {
+      "screen": "new_confirm",
+      "checked_text_nodes": 9,
+      "image": "new_confirm-960x540.png"
+    },
+    {
+      "screen": "hud-surface",
+      "checked_text_nodes": 41,
+      "image": "hud-surface-960x540.png"
+    },
+    {
+      "screen": "hud-flight",
+      "checked_text_nodes": 45,
+      "image": "hud-flight-960x540.png"
+    },
+    {
+      "screen": "hud-orbit",
+      "checked_text_nodes": 45,
+      "image": "hud-orbit-960x540.png"
+    }
+  ],
+  "passed": true
+}

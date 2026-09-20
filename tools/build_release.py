@@ -44,7 +44,7 @@ def main():
     entries['MANIFEST.sha256'] = manifest.encode('utf-8')
     with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
         for name, data in sorted(entries.items()):
-            entry = zipfile.ZipInfo(f'{prefix}/{name}', date_time=(2026, 9, 17, 0, 0, 0))
+            entry = zipfile.ZipInfo(f'{prefix}/{name}', date_time=(2026, 9, 20, 0, 0, 0))
             executable = name in ('Start-Mac.command', 'Start-Linux.sh', 'bootstrap.py', 'main.py')
             entry.create_system = 3
             entry.external_attr = (stat.S_IFREG | (0o755 if executable else 0o644)) << 16

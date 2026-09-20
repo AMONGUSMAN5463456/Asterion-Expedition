@@ -17,7 +17,7 @@ from asterion import __version__
 def main() -> int:
     parser = argparse.ArgumentParser(description="Asterion Expedition — procedural space exploration")
     parser.add_argument("--version", action="version",
-                        version=f"Asterion Expedition {__version__} - Living Horizons")
+                        version=f"Asterion Expedition {__version__} - Celestial")
     parser.add_argument("--smoke-test", action="store_true", help="Run isolated offscreen gameplay checks")
     parser.add_argument("--offscreen", action="store_true", help="Render without a desktop window")
     parser.add_argument("--software", action="store_true", help="Use the software renderer")
@@ -35,16 +35,21 @@ def main() -> int:
         print("Panda3D is not installed. Run: python3 bootstrap.py")
         return 1
     offscreen = args.offscreen or args.smoke_test
+    software = args.software or (offscreen and sys.platform.startswith("linux")
+                                and not ctypes.util.find_library("EGL"))
     config = [
-        f"window-title Asterion Expedition v{__version__} - Living Horizons",
-        "win-size 1280 720", "sync-video true",
-        "show-frame-rate-meter false", "textures-power-2 up", "framebuffer-srgb false",
+        f"window-title Asterion Expedition v{__version__} - Celestial",
+        "win-size 1280 720", "sync-video true", "gl-version 3 2",
+        "framebuffer-multisample true", "multisamples 4", "texture-anisotropic-degree 8",
+        "show-frame-rate-meter false",
+        "textures-power-2 up" if software else "textures-power-2 none",
+        "framebuffer-srgb false",
         "audio-library-name null" if args.no_audio or offscreen else "audio-library-name p3openal_audio",
         "notify-level warning", "default-directnotify-level warning", "model-cache-dir",
         "background-color 0.025 0.04 0.08 1", "text-encoding utf8",
     ]
-    if args.software or (offscreen and sys.platform.startswith("linux") and not ctypes.util.find_library("EGL")):
-        config += ["load-display p3tinydisplay", "aux-display p3tinydisplay", "textures-power-2 up"]
+    if software:
+        config += ["load-display p3tinydisplay", "aux-display p3tinydisplay"]
     elif offscreen and sys.platform.startswith("linux"):
         config.append("load-display p3headlessgl")
     if offscreen:

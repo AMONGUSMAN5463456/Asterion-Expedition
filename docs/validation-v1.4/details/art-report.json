@@ -1,0 +1,18 @@
+{
+  "renderer": "Apple M4",
+  "size": [
+    1440,
+    900
+  ],
+  "images": [
+    "courier.png",
+    "outpost.png",
+    "ruin.png",
+    "field-base.png",
+    "wildlife.png",
+    "mineral-extraction.png",
+    "survey-wave.png",
+    "orbital-exchange.png"
+  ],
+  "method": "Production game assets, native render, inspection camera poses"
+}

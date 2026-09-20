@@ -1,4 +1,4 @@
-"""Bounded, shader-free screen-edge atmosphere effects for continuous flight.
+"""Bounded screen-edge atmosphere effects with a software geometry fallback.
 
 The scene has no transition timer or camera transform ownership. All intensity
 comes from the nearest physical atmosphere; the middle of the view stays clear.
@@ -109,6 +109,14 @@ class AtmosphereEffects:
         self._build_plasma()
         self._build_wisps()
         self._build_exit()
+        self._gpu = bool(getattr(getattr(app, "visuals", None), "gpu", False))
+        if self._gpu:
+            from .visual_pipeline import shader
+            material = shader("atmosphere_effects.vert", "atmosphere_effects.frag")
+            for node, kind in ((self.plasma, 1.), (self.clouds, 0.), (self.exit, 0.)):
+                node.setShader(material, 20)
+                node.setShaderInput("ae_effect_kind", kind)
+                node.setShaderInput("ae_effect_time", 0.)
         self.root.hide()
 
     @staticmethod
@@ -210,6 +218,9 @@ class AtmosphereEffects:
             node.setColorScale(1, 1, 1, self._levels[key])
             node.show() if self._levels[key] > .001 else node.hide()
         t = self._time
+        if self._gpu:
+            for node in (self.plasma, self.clouds, self.exit):
+                node.setShaderInput("ae_effect_time", t)
         for index, node in enumerate(self._plumes):
             node.setScale(1 + .017 * math.sin(t * 8 + index * 2.1))
             node.setR(.62 * math.sin(t * 6 + index))
@@ -227,4 +238,3 @@ class AtmosphereEffects:
         if not self._destroyed:
             self.root.removeNode()
             self._destroyed = True
-

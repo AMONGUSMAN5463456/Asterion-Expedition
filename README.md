@@ -1,6 +1,6 @@
 # Asterion Expedition
 
-**Follow a quiet signal. Leave a brighter map.** · Version 1.3.0
+**Follow a quiet signal. Leave a brighter map.** · Version 1.4.0
 
 An original, native, single-player 3D space-exploration game: survey alien life,
 mine materials, fabricate equipment, fly between worlds, trade at orbital
@@ -8,56 +8,43 @@ exchanges, and establish a field base while uncovering the Meridian network.
 The Asterion Reach contains **24 systems, 96 planets, 8 biomes, and an 18-stage
 expedition story**.
 
-![Asterion Expedition surface exploration](docs/validation-v1.3/talora-touchdown.png)
+![Asterion Expedition surface exploration](docs/validation-v1.4/surface.png)
 
 This download is a **complete source ZIP**, with original generated geometry,
 audio, game code, and launch scripts. It opens a desktop game window through
 Panda3D. It requires **64-bit Python 3.10–3.14** and a first-run dependency
 download. A prebuilt or signed `.app`/`.exe` is not included.
 
-## Living horizons update
+## Celestial graphics edition
 
-Version 1.3 expands physical planet diameters fourfold, to roughly **36–61 km**,
-with larger system distances. A complete spherical terrain surface remains
-visible from orbit through touchdown. It refines as you approach; neighboring detail levels stay balanced, and the previous
-patch stays visible until all of its finer replacements are ready. Terrain
-slopes, coastlines and oceans use the same geographic samples as collision.
+Version 1.4 rebuilds the presentation throughout the expedition: warm directional
+lighting and soft shadows, finely shaded terrain, reflective animated water,
+layered clouds and atmospheric limbs, a stellar dust lane, and a cleaner image
+with selective bloom and edge smoothing. Plants have curved leaves, varied
+crowns and gentle wind. Minerals, wildlife, ships, outposts, ruins, buildings
+and stations have richer shapes and material detail.
 
-Cloud banks occupy several physical heights, with depth and parallax as you
-fly through them. Atmospheric haze and local cloud fog blend with altitude.
-Entry plasma and ascent effects retain the Camera Motion comfort setting.
-There is no entry portal, loading screen or relocation at an altitude boundary.
+The survey tool and cockpit now have bevelled metal, optical details and
+engraved instruments. Extraction has a luminous beam and contact sparks;
+scanning sends a survey wave across the clearing. The redesigned title, HUD
+and field terminal use bundled Barlow and Rajdhani typography, restrained
+colour, destination illustrations and clearer controls.
 
-Ships contact the visible land or ocean surface. Steep coastlines combine the
-land surface with the water sphere so a hull cannot clip a bank while skimming
-water. Water remains a supported surface; swimming and submarine play are not
-part of this game.
+The complete seamless planets, their terrain collision, exploration systems
+and existing saves are retained. The game still runs natively in Panda3D and
+stays offline after installation. Hardware effects use OpenGL 3.2 or newer;
+`--software` retains the improved geometry, interface, textures and baked
+lighting when a hardware renderer is unavailable.
 
-Cargo, crafting, mining, story, navigation, construction and saved progress are
-retained. Saves migrate to the expanded chart once, retaining flight momentum,
-attitude and radial altitude. Home construction keeps its metre addresses;
-nearby distant construction stays near its saved player frame. The first save
-after upgrading also keeps an untouched `expedition.json.pre-v1.3.bak` archive.
+The title screen and window title show **v1.4.0 / CELESTIAL**. Close an older
+running copy before launching this build. Check with `python3 main.py --version`.
+To update from an older ZIP, extract this edition into a new folder and choose
+**Continue**. Saves live separately from the game folder.
 
-See [the changelog](docs/CHANGELOG.md) for details.
-
-To update, close the previous game and extract this ZIP into a new folder.
-Launch it normally and choose **Continue**. Your expedition save is stored
-separately from the game folder; you do not need to copy the old game files
-or start a new expedition.
-
-## Confirm which build is running
-
-The title screen and window title display **v1.3.0 / LIVING HORIZONS** in this
-versioned download. The extracted folder is `asterion-expedition-v1.3.0`.
-Close any previous game window and run the launcher from this new folder.
-You can also run `python3 main.py --version` without installing the engine.
-
-The opening area and interface retain their previous art style. To check the
-flight changes, launch and keep climbing past the old 420 m boundary: there is
-no teleport or fade. Clouds and sky thin gradually, and the same physical planet
-remains below you. Fly directly back into its atmosphere; F is only needed for
-low, slow landing. Existing saves can be continued.
+Actual game captures and verification are in
+[the graphics validation folder](docs/validation-v1.4/) and
+[the test report](docs/TEST_REPORT.md). The expanded planets and continuous
+flight introduced in 1.3 remain documented in [the changelog](docs/CHANGELOG.md).
 
 ## Start on a Mac
 

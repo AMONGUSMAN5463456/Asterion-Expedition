@@ -1,13 +1,12 @@
-"""Original camera-mounted exploration equipment, built from coloured geometry.
+"""Crafted camera-mounted equipment with a prelit software fallback.
 
-No textures, shaders, lights, global tasks, or gameplay dependencies are used.
-The application's camera owns every node; :meth:`destroy` removes them together.
+The application's camera owns every node; destroy removes them together.
 """
 from __future__ import annotations
 
 import math
 
-from panda3d.core import ColorAttrib, TransparencyAttrib
+from panda3d.core import BitMask32, ColorAttrib, TextNode, TransparencyAttrib
 
 from .geometry import Mesh
 
@@ -53,6 +52,10 @@ class PlayerEffects:
         self.root.setAttrib(ColorAttrib.makeVertex(), 1)
         self.root.setDepthTest(True)
         self.root.setDepthWrite(True)
+        self.root.hide(BitMask32.bit(1))
+        if getattr(getattr(app, "visuals", None), "gpu", False):
+            from .visual_pipeline import shader
+            self.root.setShader(shader("equipment.vert", "equipment.frag"), 2)
         self.tool = self.root.attachNewNode("survey-tool")
         self.cockpit = self.root.attachNewNode("cockpit")
         self._time = 0.0
@@ -72,35 +75,55 @@ class PlayerEffects:
     def _make_tool(self):
         body = Mesh()
         # Short, twin-pronged survey head, with a recessed optical core.
-        body.box((0, -0.005, 0), (0.29, 0.39, 0.22), _GRAPHITE)
-        body.box((0.015, 0.015, 0.088), (0.285, 0.34, 0.085), _IVORY)
-        body.box((0.01, -0.005, -0.096), (0.28, 0.38, 0.07), _ALLOY)
-        body.box((0.15, -0.015, -0.005), (0.065, 0.28, 0.17), _IVORY)
-        body.box((-0.155, 0.015, 0), (0.04, 0.31, 0.17), _FRAME)
+        body.bevel_box((0, -0.005, 0), (0.29, 0.39, 0.22), _GRAPHITE)
+        body.bevel_box((0.015, 0.015, 0.088), (0.285, 0.34, 0.085), _IVORY)
+        body.bevel_box((0.01, -0.005, -0.096), (0.28, 0.38, 0.07), _ALLOY)
+        body.bevel_box((0.15, -0.015, -0.005), (0.065, 0.28, 0.17), _IVORY)
+        body.bevel_box((-0.155, 0.015, 0), (0.04, 0.31, 0.17), _FRAME)
         body.tube((0, 0.13, 0.022), (0, 0.40, 0.022), 0.081, _FRAME, 12)
         body.tube((0, 0.36, 0.022), (0, 0.47, 0.022), 0.107, _ALLOY, 12,
                   end_radius=0.094)
         for side in (-1, 1):
-            body.box((side * 0.11, 0.27, 0.071), (0.056, 0.40, 0.058), _IVORY)
-            body.box((side * 0.11, 0.475, 0.071), (0.057, 0.026, 0.060), _AMBER)
-            body.box((side * 0.108, 0.185, -0.067), (0.045, 0.23, 0.04), _FRAME)
+            body.bevel_box((side * 0.11, 0.27, 0.071), (0.056, 0.40, 0.058), _IVORY)
+            body.bevel_box((side * 0.11, 0.475, 0.071), (0.057, 0.026, 0.060), _AMBER)
+            body.bevel_box((side * 0.108, 0.185, -0.067), (0.045, 0.23, 0.04), _FRAME)
         # Amber carrying brace and ribbed, compact grip keep the silhouette
         # industrial rather than turning the device into a large weapon.
         body.tube((0.12, -0.12, -0.055), (0.14, -0.12, -0.31), 0.062,
                   _GRAPHITE, 6, end_radius=0.049)
         for i in range(5):
-            body.box((0.14, -0.13, -0.12 - i * 0.037), (0.11, 0.085, 0.016), _FRAME)
+            body.bevel_box((0.14, -0.13, -0.12 - i * 0.037), (0.11, 0.085, 0.016), _FRAME)
         body.tube((-0.10, -0.16, 0.12), (-0.10, 0.095, 0.19), 0.018, _AMBER, 6)
         body.tube((-0.10, 0.095, 0.19), (0.10, 0.095, 0.19), 0.018, _AMBER, 6)
         body.tube((0.10, 0.095, 0.19), (0.10, -0.16, 0.12), 0.018, _AMBER, 6)
         # An exposed side lens, fasteners, cooling slots and cartridge seams.
         body.tube((-0.18, 0.007, 0), (-0.202, 0.007, 0), 0.067, _ALLOY, 12)
         for y in (-0.12, -0.06, 0.0, 0.06):
-            body.box((0.014, y, 0.133), (0.13, 0.013, 0.009), _GRAPHITE)
+            body.bevel_box((0.014, y, 0.133), (0.13, 0.013, 0.009), _GRAPHITE)
         for z in (-0.061, 0.061):
             for y in (-0.12, 0.12):
                 body.tube((-0.176, y, z), (-0.181, y, z), 0.010, _ALLOY, 6)
         body.node("survey-tool-body", self.tool)
+
+        # Layered anodised collars and small independent ceramic panels catch
+        # light around the optical head; lettering gives it manufactured scale.
+        detail = Mesh()
+        for y, radius in ((.34,.097),(.405,.107),(.454,.096)):
+            detail.tube((0,y,.022),(0,y+.010,.022),radius,_GRAPHITE,32,smooth=True)
+        for side in (-1,1):
+            detail.bevel_box((side*.154,.063,.02),(.009,.13,.088),_ALLOY,bevel=.003)
+            for i in range(3):
+                detail.bevel_box((side*.11,.28+i*.052,.107),(.035,.029,.010),_FRAME,bevel=.003)
+        detail.node("survey-anodised-details",self.tool)
+        label=TextNode("survey-equipment-serial")
+        label.setText("AE / 07")
+        label.setTextColor(.72,.86,.86,1)
+        label.setAlign(TextNode.ACenter)
+        label_node=self.tool.attachNewNode(label)
+        label_node.setScale(.018)
+        label_node.setPos(.016,-.219,-.04)
+        label_node.setLightOff(10)
+        label_node.setShaderOff(10)
 
         optics = Mesh()
         optics.tube((-0.204, 0.007, 0), (-0.207, 0.007, 0), 0.045, _CYAN, 16)
@@ -151,10 +174,10 @@ class PlayerEffects:
                 shell.tri((x, 1.28, -.58), front[i], front[j], _GRAPHITE)
                 tone = _ALLOY if i in (2, 3, 4) else _FRAME
                 shell.quad(front[j], front[i], back[i], back[j], tone)
-            shell.box((x, 1.274, -.559), (.53, .012, .108), _FRAME)
-            shell.box((x - side * .025, 1.264, -.552), (.385, .008, .069), _SCREEN)
-            shell.box((x + side * .237, 1.261, -.552), (.043, .014, .08), _GRAPHITE)
-            shell.box((x - side * .284, 1.268, -.560), (.012, .012, .098), _AMBER)
+            shell.bevel_box((x, 1.274, -.559), (.53, .012, .108), _FRAME)
+            shell.bevel_box((x - side * .025, 1.264, -.552), (.385, .008, .069), _SCREEN)
+            shell.bevel_box((x + side * .237, 1.261, -.552), (.043, .014, .08), _GRAPHITE)
+            shell.bevel_box((x - side * .284, 1.268, -.560), (.012, .012, .098), _AMBER)
             for i in range(8):
                 bx = x - .163 + i * .043
                 height = .011 + i * .0035
@@ -172,7 +195,7 @@ class PlayerEffects:
                            .007, _ALLOY, 6)
             # Small vents and layered rim seams read as metal at close range.
             for i in range(5):
-                shell.box((x - .10 + i * .05, 1.41, -.465),
+                shell.bevel_box((x - .10 + i * .05, 1.41, -.465),
                           (.027, .088, .005), _GRAPHITE)
             # Thin canopy edges live at the edges and top of the viewport.
             foot = (side * 1.055, 1.42, -0.52)
@@ -191,6 +214,19 @@ class PlayerEffects:
         shell.node("cockpit-shell", self.cockpit)
         self.instruments = instruments.node("cockpit-instruments", self.cockpit, unlit=True)
         self.indicators = indicators.node("cockpit-indicators", self.cockpit, unlit=True)
+
+        telemetry=Mesh()
+        for side in (-1,1):
+            x=side*.75
+            # Recessed diagnostic ticks and rotary dials live below the flight
+            # sightline; they remain visually useful with the HUD disabled.
+            for i in range(20):
+                height=.009 if i%5 else .019
+                telemetry.box((x-.21+i*.022,1.250,-.515),(.002,.002,height),(.23,.57,.64))
+            telemetry.ring((x+side*.235,1.245,-.555),.019,.022,_CYAN,32,tilt=90)
+            for i in range(4):
+                telemetry.box((x-.15+i*.075,1.249,-.621),(.04,.004,.006),_AMBER if i==0 else _FRAME)
+        telemetry.node("cockpit-engraved-telemetry",self.cockpit,unlit=True)
 
         glass = Mesh()
         for side in (-1, 1):

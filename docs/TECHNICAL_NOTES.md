@@ -1,5 +1,30 @@
 # Technical notes
 
+## Celestial rendering
+
+`visual_pipeline.py` owns the hardware path: GLSL 1.50 material shaders,
+a directional depth map with filtered shadow comparison, an HDR scene target,
+a reduced-size bloom pass and an edge-smoothing final pass. The interface
+renders afterward so text is not blurred by the scene filters. Buffers resize
+with the game window and are released when the app closes.
+
+`surface_materials.py` shades the existing physical terrain mesh in planet
+coordinates. It adds soil detail, optical water normals and shoreline foam;
+it never moves a terrain vertex. `celestial_sky.py` provides a continuous sky,
+small stellar point sprites, a dust lane and a sun corona. Cloud billows remain
+attached to physical world positions, with their original collision-free depth.
+
+`geometry.py` contains all original procedural model geometry. Curved leaves,
+bevelled industrial panels, crystal growth, animal bodies and mechanical detail
+replace the earlier basic shapes. `effects.py` renders the camera equipment;
+`exploration_vfx.py` owns short-lived survey and mining light.
+
+The desktop launcher requests OpenGL 3.2. GLSL capability is detected separately
+from Panda's legacy Cg shader flag, which is false on modern macOS. TinyDisplay
+runs without GPU buffers/shaders and keeps the model, palette and UI upgrades.
+No new runtime package or asset download is required beyond the existing pinned
+Panda3D installation.
+
 ## Runtime and package structure
 
 Asterion Expedition uses Python 3.10–3.14, Panda3D 1.10.16, and the Python

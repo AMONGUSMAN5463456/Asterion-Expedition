@@ -1,0 +1,25 @@
+{
+  "version": "1.4.0",
+  "renderer": "",
+  "gpu": false,
+  "size": [
+    960,
+    540
+  ],
+  "startup_seconds": 9.61,
+  "timings": {
+    "surface": {
+      "median_ms": 192.67,
+      "p95_ms": 307.93,
+      "update_median_ms": 19.7,
+      "render_median_ms": 174.26,
+      "loaded_chunks": 81,
+      "queued_chunks": 0
+    }
+  },
+  "images": [
+    "surface-clean.png",
+    "surface.png",
+    "title.png"
+  ]
+}
