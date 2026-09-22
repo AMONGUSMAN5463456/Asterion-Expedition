@@ -80,7 +80,7 @@ environment; see the troubleshooting notes below.
 | Platform | Launch | If the script does not open |
 | --- | --- | --- |
 | Windows | Double-click `Start-Windows.bat` | In a terminal in the game folder: `py -3 bootstrap.py` |
-| Linux | Run `sh Start-Linux.sh` in a terminal | `python3 bootstrap.py`; your Python installation needs the `venv` module |
+| Linux | Run `./Start-Linux.sh` in a terminal | `python3 bootstrap.py`; your Python installation needs the `venv` module |
 
 Use 64-bit CPython 3.10–3.14. Desktop graphics support is required. A keyboard and
 mouse or trackpad are required; a mouse is easiest for flight and mining. The
