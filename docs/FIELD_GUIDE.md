@@ -53,9 +53,11 @@ you read. You can take time to inspect costs without losing suit reserves.
    opens the exchange when you arrive. Press **E** to cancel an approach if you
    want manual control. Sell spare materials, keep your essential supplies,
    and inspect the available contracts.
-7. **Visit another world.** Use the system map to select an approach to a
-   different planet. The ship flies the whole route and descends into its
-   survey district. Your new location is recorded and saved on touchdown.
+7. **Visit another world.** Climb above **3,000 m**, open **M**, and choose
+   **QUANTUM TARGET** on a different planet. Press **Q** to spool and align,
+   then press **Q** again when the drive reads **READY**. On arrival, fly down
+   yourself or select an automatic approach in M to descend into the survey
+   district. Your new location is recorded and saved on touchdown.
 
 The objective card follows your progress. Actions already recorded can count
 toward later cumulative goals, so exploration between chapters is useful.
@@ -144,6 +146,30 @@ plots a route around planets and asteroids, then physically descends to the
 chosen planet's home survey district. E cancels back to manual flight and keeps
 your momentum. A station approach opens the exchange. A blocked automatic route
 stops steering and asks you to move into clearer space before plotting again.
+
+## Quantum travel between planets
+
+The quantum drive crosses long distances within your current star system.
+Climb into orbit above **3,000 m** and open **M**. Choose **QUANTUM TARGET**
+on the planet you want to reach; the chart closes with that destination selected.
+Pressing **Q** without a target opens the navigation chart.
+
+Press **Q** to start the drive. It spools for about three seconds while the
+ship aligns with a route around planets, the station and asteroids. The cockpit
+shows spool progress and readiness. When it reads **READY**, press **Q** again
+to engage. You need enough ordinary ship fuel for the route; the full cost is
+charged at engagement. Quantum travel does not consume a Fold Cell.
+
+The drive accelerates, cruises and slows to a stop about **3,500 m** above the
+near side of the selected planet. Arrival leaves you in orbit, ready to enter
+the atmosphere or choose an automatic approach in **M**. **Shift** remains the
+ordinary boost control for manual flight.
+
+Press **Q** or **E** during transit to abort and stop safely in space. **E** also
+cancels spooling or a ready drive. A four-second cooldown follows a transit
+abort or arrival before the drive can spool again. Opening a menu pauses the entire
+sequence, and closing it resumes travel. An unexpected solid on the route
+drops the ship out of quantum travel before it can pass through the obstacle.
 
 ## Trading and interstellar travel
 
@@ -255,7 +281,9 @@ want to keep an earlier journey. Save paths are listed in the main
 [README](../README.md). Close the game before copying, restoring, or editing
 save files. A backup is maintained for recovery from an invalid primary file.
 
-Flight saves resume in the air with the same altitude, attitude and velocity,
-including over the far side of a planet or its poles. Opening a menu pauses
-movement before you save or reload. Cargo, catalog, bases and story progress
-continue from the saved state. Old saves migrate automatically on loading.
+Ordinary flight saves resume in the air with the same altitude, attitude and
+velocity, including over the far side of a planet or its poles. A save made
+while the quantum drive is active resumes stopped at its saved position with
+the drive disengaged; select a target again to continue the journey. Opening a
+menu pauses movement before you save or reload. Cargo, catalog, bases and story
+progress continue from the saved state. Old saves migrate automatically on loading.

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 
-from panda3d.core import BitMask32, ColorAttrib, TextNode, TransparencyAttrib
+from panda3d.core import BitMask32, ColorAttrib, ColorBlendAttrib, TextNode, TransparencyAttrib
 
 from .geometry import Mesh
 
@@ -38,7 +38,10 @@ class PlayerEffects:
     subtle equipment sway and indicator animation. ``mining`` adds tool recoil,
     while ``scanner`` illuminates its separate rotating optical crown. Optional
     ``camera_motion`` scales equipment motion only; the controller exclusively
-    owns camera transforms and field of view.
+    owns camera transforms and field of view. Optional ``quantum_phase`` and
+    ``quantum_progress`` drive a retained charge halo and forward-flowing tunnel.
+    The tunnel's travel cue never shakes or changes the camera, including when
+    camera motion is disabled. No task, texture, or shader is required for it.
     """
 
     def __init__(self, app):
@@ -64,13 +67,166 @@ class PlayerEffects:
         self._scan = 0.0
         self._boost = 0.0
         self._contact = 0.0
+        self._quantum_time = 0.0
+        self._quantum_phase = "idle"
         self._mode = None
         self._destroyed = False
         self._make_tool()
         self.tool.setScale(0.54)
         self._make_cockpit()
+        self._make_quantum()
         self.tool.hide()
         self.cockpit.hide()
+
+    def _make_quantum(self):
+        """Build a sparse light corridor in camera space, behind the canopy.
+
+        Vertex alpha softens every ribbon on both renderers. Everything lives
+        under the equipment owner and is retained for the whole session; no
+        scene nodes or geometry are allocated during travel.
+        """
+        self.quantum = self.root.attachNewNode("quantum-drive-effects")
+        self.quantum.setShaderOff(20)
+        self.quantum.setLightOff(20)
+        self.quantum.setMaterialOff(20)
+        self.quantum.setAttrib(ColorAttrib.makeVertex(), 20)
+        self.quantum.setTransparency(TransparencyAttrib.MAlpha)
+        self.quantum.setAttrib(ColorBlendAttrib.make(
+            ColorBlendAttrib.MAdd, ColorBlendAttrib.OIncomingAlpha,
+            ColorBlendAttrib.OOne))
+        self.quantum.setDepthWrite(False)
+        self.quantum.setTwoSided(True)
+        self.quantum.setBin("transparent", 5)
+        self.quantum_charge = self.quantum.attachNewNode("quantum-charge-halo")
+        self.quantum_tunnel = self.quantum.attachNewNode("quantum-travel-corridor")
+        self._quantum_charge_segments = []
+        self._quantum_streaks = []
+        self._quantum_waves = []
+
+        def point(angle, radius, depth):
+            return (math.cos(angle) * radius, depth, math.sin(angle) * radius)
+
+        # Small broken arcs sit outside the flight sight and fill clockwise as
+        # the drive calibrates. This halo has no full-screen flash or occluder.
+        for index in range(16):
+            arc = Mesh()
+            start = math.pi / 2 - (index + 1) * math.tau / 16
+            for step in range(4):
+                a = start + (.035 + step * .075)
+                b = a + .075
+                arc.quad(point(a, .292, 3.2), point(b, .292, 3.2),
+                         point(b, .305, 3.2), point(a, .305, 3.2),
+                         (.20, .83, 1.0, .68))
+                arc.quad(point(a, .305, 3.2), point(b, .305, 3.2),
+                         point(b, .329, 3.2), point(a, .329, 3.2),
+                         (.10, .48, 1.0, .15),
+                         colors=((.10, .48, 1.0, .15), (.10, .48, 1.0, .15),
+                                 (.10, .48, 1.0, 0), (.10, .48, 1.0, 0)))
+            self._quantum_charge_segments.append(
+                arc.node("quantum-calibration-arc", self.quantum_charge, unlit=True))
+
+        # Broad translucent filaments curve along the corridor; perspective
+        # contracts their distant ends into a small, open vanishing point.
+        filaments = Mesh()
+        for index in range(12):
+            base = index * math.tau / 12
+            for step in range(22):
+                u, v = step / 22, (step + 1) / 22
+                y0, y1 = 3 + 142 * u, 3 + 142 * v
+                r0, r1 = 5.6 + u * 3.4, 5.6 + v * 3.4
+                a, b = base + u * .38, base + v * .38
+                width = .032 + .018 * math.sin(index * 2.4) ** 2
+                color = (.055, .30 + .16 * (index % 3), 1.0)
+                alpha0 = .15 * math.sin(u * math.pi) ** .65
+                alpha1 = .15 * math.sin(v * math.pi) ** .65
+                for side in (-1, 1):
+                    filaments.quad(point(a, r0, y0), point(b, r1, y1),
+                                   point(b + side * width, r1, y1),
+                                   point(a + side * width, r0, y0), (*color, alpha0),
+                                   colors=((*color, alpha0), (*color, alpha1),
+                                           (*color, 0), (*color, 0)))
+        self._quantum_filaments = filaments.node(
+            "quantum-blue-filaments", self.quantum_tunnel, unlit=True)
+
+        # Each luminous streak has a narrow pale core and a wider blue wake.
+        # Deterministic lanes avoid random flashing and visual discontinuities.
+        for index in range(60):
+            angle = index * 2.399963229728653
+            radius = 4.4 + (index * .61803398875 % 1) * 5.2
+            length = 5.0 + (index * .38196601125 % 1) * 13.0
+            streak = Mesh()
+            for width, color, strength in ((.018, (.10, .39, 1.0), .38),
+                                           (.0038, (.49, .91, 1.0), .88)):
+                for start, end, aa, ab in ((0, .20, 0, strength),
+                                            (.20, 1, strength, 0)):
+                    streak.quad(point(angle - width, radius, length * start),
+                                point(angle + width, radius, length * start),
+                                point(angle + width, radius, length * end),
+                                point(angle - width, radius, length * end), (*color, aa),
+                                colors=((*color, aa), (*color, aa),
+                                        (*color, ab), (*color, ab)))
+            node = streak.node("quantum-forward-streak", self.quantum_tunnel, unlit=True)
+            self._quantum_streaks.append((node, (index * .61803398875) % 1,
+                                          .66 + (index % 7) * .047))
+
+        # Widely spaced, broken wave fronts give depth without making a solid
+        # cylinder around the ship. Their tapered inner and outer edges glow.
+        for index in range(4):
+            wave = Mesh()
+            for segment in range(72):
+                if (segment + index * 7) % 18 > 13:
+                    continue
+                a, b = segment * math.tau / 72, (segment + 1) * math.tau / 72
+                for inner, outer, aa, ab in ((6.05, 6.20, 0, .22),
+                                             (6.20, 6.44, .22, 0)):
+                    wave.quad(point(a, inner, 0), point(b, inner, 0),
+                              point(b, outer, 0), point(a, outer, 0), (.18, .64, 1.0, aa),
+                              colors=((.18, .64, 1.0, aa), (.18, .64, 1.0, aa),
+                                      (.18, .64, 1.0, ab), (.18, .64, 1.0, ab)))
+            node = wave.node("quantum-wave-front", self.quantum_tunnel, unlit=True)
+            self._quantum_waves.append((node, index / 4))
+        self.quantum.hide()
+
+    def _update_quantum(self, dt, mode, phase, progress, motion):
+        phase = phase if isinstance(phase, str) else "idle"
+        active = mode in ("flight", "orbit") and phase in ("spooling", "ready", "transit")
+        if not active:
+            self.quantum.hide()
+            self._quantum_phase = "idle"
+            self._quantum_time = 0.0
+            return
+        if phase != self._quantum_phase:
+            self._quantum_time = 0.0
+        self._quantum_phase = phase
+        self._quantum_time = (self._quantum_time + dt) % 3600.0
+        t = self._quantum_time
+        progress = _finite(progress)
+        self.quantum.show()
+        if phase != "transit":
+            self.quantum_tunnel.hide()
+            self.quantum_charge.show()
+            charge = 1.0 if phase == "ready" else progress
+            pulse = 1.0 if not motion else .94 + .06 * math.sin(t * 2.2) * motion
+            self.quantum_charge.setColorScale(1, 1, 1, pulse * (.35 + .65 * charge))
+            for index, node in enumerate(self._quantum_charge_segments):
+                strength = 1.0 if charge * 16 >= index + 1 else .12
+                node.setColorScale(1, 1, 1, strength)
+            return
+        self.quantum_charge.hide()
+        self.quantum_tunnel.show()
+        # A gradual entrance and eased terminal glow prevent a hard flash.
+        envelope = min(1.0, .20 + t * 1.8) * (.62 + .38 * math.sin(progress * math.pi))
+        self.quantum_tunnel.setColorScale(1, 1, 1, envelope)
+        self._quantum_filaments.setR(math.sin(t * .25) * 2.0 * motion)
+        for node, offset, rate in self._quantum_streaks:
+            travel = (offset + t * rate) % 1.0
+            node.setY(3 + (1 - travel) * 112)
+            node.setColorScale(1, 1, 1, min(1, travel * 8, (1 - travel) * 10))
+        for node, offset in self._quantum_waves:
+            travel = (offset + t * .39) % 1.0
+            node.setY(5 + (1 - travel) * 96)
+            node.setR((offset * 70 + t * 2) * motion)
+            node.setColorScale(1, 1, 1, min(1, travel * 5, (1 - travel) * 7))
 
     def _make_tool(self):
         body = Mesh()
@@ -254,7 +410,7 @@ class PlayerEffects:
 
     def update(self, dt, mode, mining=False, thrust=0, scanner=False,
                camera_motion=.35, boosting=False, braking=False,
-               collision_feedback=0):
+               collision_feedback=0, quantum_phase="idle", quantum_progress=0):
         if self._destroyed:
             return
         dt = _finite(dt, high=0.25)
@@ -266,6 +422,7 @@ class PlayerEffects:
         self._boost += (float(bool(boosting)) - self._boost) * blend
         self._contact = max(_finite(collision_feedback), self._contact * math.exp(-9 * dt))
         motion = _finite(camera_motion, default=.35)
+        self._update_quantum(dt, mode, quantum_phase, quantum_progress, motion)
         if mode != self._mode:
             self.tool.hide()
             self.cockpit.hide()

@@ -102,6 +102,14 @@ Below **65 m** and **48 m/s**, press **F** to land. Open **M** for an automatic
 approach that physically climbs, cruises and descends to the survey district.
 **E** cancels it. A station approach opens its exchange.
 
+For faster travel between planets, climb above **3,000 m**, open **M**, and
+choose **QUANTUM TARGET** on a planet. Press **Q** to spool and align the
+drive, wait for **READY**, then press **Q** again to engage. The ship follows
+a clear route and stops about **3,500 m** above the destination. **Q** or **E**
+aborts; a short cooldown follows arrival or a transit abort. Quantum travel uses
+ordinary ship fuel, charged when you engage. Fold Cells are for interstellar
+travel. After arrival, fly down yourself or select an automatic approach in M.
+
 Keep oxygen, sodium, and cells in cargo. **R** uses a suitable recharge item;
 **I** opens cargo for individual item actions. Ships and outposts provide
 shelter. **X** recalls your ship on the surface. If you run out of supplies,
@@ -123,8 +131,9 @@ and biome.
 | Space | Jump; hold for jetpack | Ascend |
 | Ctrl | Air brake; with Space, hover | Descend |
 | Hold left mouse | Mine plants and mineral deposits | Mine asteroids in orbit |
-| E | Interact; launch near your ship | Dock near a station; cancel automatic approach |
+| E | Interact; launch near your ship | Dock near a station; cancel automatic approach or quantum drive |
 | F | Launch near your ship | Land below 65 m and 48 m/s |
+| Q | — | Open quantum navigation; spool / engage / abort selected route |
 | C | Survey scan | Survey scan |
 | R | Quick recharge | Quick recharge / refuel |
 | X | Recall ship nearby | — |
@@ -149,7 +158,9 @@ arrival, and when you quit normally. **F5** saves immediately. Save files includ
 cargo, upgrades, discoveries, depleted deposits, construction, progression,
 settings, your location, and flight velocity/orientation. An atmospheric flight
 save resumes in the air at the same place with the same momentum. Orbital saves
-resume in space. Old saves are upgraded once to the expanded chart. The original pre-1.3 file is also retained beside the rolling backup.
+resume in space. A save made while the quantum drive is active resumes stopped
+at the saved position with the drive disengaged. Old saves are upgraded once to
+the expanded chart. The original pre-1.3 file is also retained beside the rolling backup.
 
 | Platform | Save directory |
 | --- | --- |
@@ -176,6 +187,7 @@ folder. Save data is separate from the game installation and `.venv`.
 | You cannot mine | Move closer, keep the target under the reticle, hold the button, and check free cargo space. Solid objects now block the beam. Surface-flight mining is unavailable. |
 | You cannot land | Fly through the atmosphere, descend below 65 m and brake below 48 m/s, then press F over open ground. M can fly an automatic approach. |
 | You cannot launch | Move within reach of the ship, press R to recharge fuel, or use rescue from Esc. X recalls the ship on foot. |
+| The quantum drive will not engage | Climb above 3,000 m, select QUANTUM TARGET in M, refuel if needed, and wait for READY before pressing Q again. Wait out any cooldown; if no clear route is found, move into open space and try again. |
 
 If an application error occurs after startup, details may also be written to
 `crash.log` beside the save file. See [technical notes](docs/TECHNICAL_NOTES.md)

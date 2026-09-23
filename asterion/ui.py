@@ -130,7 +130,10 @@ class GameUI:
     ``location_detail``, ``tool`` and ``pitch``. Movement feedback accepts
     ``grounded``, ``jetpacking``, ``boosting``, ``braking``, ``drifting``,
     ``flight_assist``, ``throttle``, ``vertical_speed`` and
-    ``collision_feedback`` (0..1). None are required.
+    ``collision_feedback`` (0..1). Optional ``quantum`` contains ``phase``
+    (idle/spooling/ready/transit/cooldown), ``target``, ``progress``,
+    ``spool_progress`` (0..1), ``remaining`` (metres), ``eta`` (seconds),
+    ``cost`` (fuel percentage), and ``cooldown`` (seconds). None are required.
 
     A minimal/fake application without an aspect2d NodePath is supported: the
     public methods still store their models and report panel_open, with drawing
@@ -566,6 +569,12 @@ class GameUI:
         self._label(self._mining_group, "EXTRACTION", cx, 568, 11, AMBER,
                     align=TextNode.ACenter)
         self._mining_group.hide()
+        self._quantum_group = self.hud.attachNewNode("quantum-drive-feedback")
+        self._quantum_meter = self._quantum_group.attachNewNode("quantum-progress-meter")
+        self._quantum_bar = _Bar(self, self._quantum_meter, cx - 116, 546, 232, 3, CYAN)
+        self._label(self._quantum_group, "", cx, 570, 13, CYAN,
+                    align=TextNode.ACenter, key="quantum_detail")
+        self._quantum_group.hide()
         self._label(self.hud, "MULTITOOL / SURVEY", cx, 775, 11, MUTED,
                     align=TextNode.ACenter, key="tool")
 
@@ -639,23 +648,64 @@ class GameUI:
         self._cockpit.hide()
 
     @staticmethod
+    def _quantum_view(view):
+        quantum = view.get("quantum")
+        return quantum if isinstance(quantum, dict) else {}
+
+    @staticmethod
+    def _quantum_eta(value):
+        seconds = min(359999, max(0, math.ceil(_number(value))))
+        if seconds >= 3600:
+            return f"{seconds // 3600}H {(seconds % 3600) // 60:02d}M"
+        return f"{seconds // 60}:{seconds % 60:02d}"
+
+    @staticmethod
+    def _quantum_distance(value):
+        distance = max(0, _number(value))
+        if distance >= 1_000_000:
+            return f"{distance / 1_000_000:.1f} MM"
+        if distance >= 1000:
+            return f"{distance / 1000:.0f} KM"
+        return f"{distance:.0f} M"
+
+    @staticmethod
+    def _flight_status(view, speed=0):
+        """Quantum states take over the retained flight status strip."""
+        quantum = GameUI._quantum_view(view)
+        phase = quantum.get("phase", "idle")
+        spool = _clamp(quantum.get("spool_progress", quantum.get("progress", 0)))
+        progress = _clamp(quantum.get("progress", 0))
+        cost = _clamp(quantum.get("cost", 0), 0, 100)
+        if phase == "spooling":
+            return "QUANTUM SPOOLING", f"CALIBRATING {spool:.0%}  /  Q CANCEL", spool, CYAN
+        if phase == "ready":
+            return "QUANTUM READY", f"Q ENGAGE  /  FUEL {cost:.1f}%", 1, CYAN
+        if phase == "transit":
+            eta = GameUI._quantum_eta(quantum.get("eta", 0))
+            return "QUANTUM TRANSIT", f"{progress:.0%}  /  ETA {eta}  /  Q/E ABORT", progress, CYAN
+        if phase == "cooldown":
+            cooldown = max(0, _number(quantum.get("cooldown", 0)))
+            return "DRIVE COOLING", f"{cooldown:.1f}S  /  CONVENTIONAL FLIGHT", 0, AMBER
+        throttle = _clamp(view.get("throttle", 0))
+        assist = bool(view.get("flight_assist", True))
+        detail = f"ASSIST {'ON' if assist else 'OFF'}  /  THRUST {throttle:.0%}"
+        if view.get("braking"):
+            return "BRAKING", detail, 1.0, AMBER
+        if view.get("boosting"):
+            return "BOOST ACTIVE", detail, max(throttle, .85), AMBER
+        if throttle > .025:
+            return "ENGINE THRUST", detail, throttle, CYAN
+        if view.get("drifting"):
+            return "INERTIAL DRIFT", detail, throttle, MUTED
+        if speed < .4:
+            return "STATION KEEPING" if assist else "FREE FLIGHT", detail, 0, CYAN
+        return "ASSIST DECELERATING" if assist else "COASTING", detail, 0, CYAN
+
+    @staticmethod
     def _movement_readout(view, flying, speed):
         """Return a truthful status even when older callers omit new fields."""
-        throttle = _clamp(view.get("throttle", 0))
         if flying:
-            assist = bool(view.get("flight_assist", True))
-            detail = f"ASSIST {'ON' if assist else 'OFF'}  /  THRUST {throttle:.0%}"
-            if view.get("braking"):
-                return "BRAKING", detail, 1.0, AMBER
-            if view.get("boosting"):
-                return "BOOST ACTIVE", detail, max(throttle, .85), AMBER
-            if throttle > .025:
-                return "ENGINE THRUST", detail, throttle, CYAN
-            if view.get("drifting"):
-                return "INERTIAL DRIFT", detail, throttle, MUTED
-            if speed < .4:
-                return "STATION KEEPING" if assist else "FREE FLIGHT", detail, 0, CYAN
-            return "ASSIST DECELERATING" if assist else "COASTING", detail, 0, CYAN
+            return GameUI._flight_status(view, speed)
         vertical = _number(view.get("vertical_speed", 0))
         if view.get("jetpacking"):
             vitals = view.get("vitals") or {}
@@ -686,6 +736,9 @@ class GameUI:
         labels = self._hud_labels
         mode = _as_text(view.get("mode", "surface"))
         flying = mode in ("orbit", "flight", "ship", "space")
+        quantum = self._quantum_view(view) if flying else {}
+        quantum_phase = _as_text(quantum.get("phase", "idle"))
+        quantum_active = quantum_phase in ("spooling", "ready", "transit", "cooldown")
         compact = self.width < 1350
         labels["location"].set(self._short(view.get("location", "Uncharted world"),
                                           315 if compact else 345,
@@ -695,6 +748,8 @@ class GameUI:
                      "orbit": "ORBITAL FLIGHT", "ship": "VESSEL", "space": "DEEP SPACE"}.get(mode, mode.upper())
         if flying and view.get("flight_phase"):
             mode_name = _as_text(view["flight_phase"]).replace("_", " ").upper()
+        if quantum_active:
+            mode_name = "QUANTUM " + quantum_phase.upper()
         biome_line = mode_name + ((" / " + biome.upper()) if biome else "")
         labels["biome"].set(self._short(biome_line, 315 if compact else 345, 14))
         detail = view.get("location_detail") or view.get("system_name") or ""
@@ -767,24 +822,54 @@ class GameUI:
         labels["telemetry_title"].set("FLIGHT TELEMETRY" if flying else "SURVEY TELEMETRY")
         speed = abs(_number(view.get("speed", 0)))
         altitude = _number(view.get("planet_altitude", view.get("altitude", 0)))
-        labels["speed"].set(f"{speed:.1f}" if speed < 100 else f"{speed:,.0f}")
+        speed_text = (f"{speed:.1f}" if speed < 100 else
+                      f"{speed:,.0f}" if speed < 100000 else f"{speed / 1000:.0f}k")
+        labels["speed"].set(speed_text)
         labels["altitude"].set(f"{altitude:,.0f}" if abs(altitude) < 100000 else f"{altitude / 1000:.0f}k")
         coordinates = view.get("coordinates", "X 0  /  Y 0")
         if isinstance(coordinates, (list, tuple)):
             coordinates = " / ".join(f"{axis} {_number(value):,.0f}" for axis, value in zip("XYZ", coordinates))
         labels["coordinates"].set(self._short(coordinates, 230 if compact else 258, 12))
-        labels["target"].set(self._short(view.get("target", ""), 560, 20, True))
+        target = view.get("target") or (quantum.get("target", "") if quantum_active else "")
+        labels["target"].set(self._short(target, 560, 20, True))
         prompt = view.get("prompt", "")
+        if not prompt and quantum_active:
+            prompt = {"spooling": "Q / Cancel quantum spool", "ready": "Q / Engage quantum drive",
+                      "transit": "Q or E / Abort quantum travel", "cooldown": ""}[quantum_phase]
+        elif not prompt and quantum.get("target"):
+            prompt = "Q / Spool quantum drive"
         labels["prompt"].set(self._short(prompt, 610, 16))
         self._prompt_back.show() if prompt else self._prompt_back.hide()
-        labels["tool"].set(view.get("tool", "VESSEL / FLIGHT SYSTEMS" if flying else "MULTITOOL / SURVEY"))
+        tool = "VESSEL / QUANTUM DRIVE" if quantum_active else "VESSEL / FLIGHT SYSTEMS" if flying else "MULTITOOL / SURVEY"
+        labels["tool"].set(view.get("tool", tool))
         status, detail, amount, color = self._movement_readout(view, flying, speed)
         labels["movement_status"].set(status)
         labels["movement_status"].color(color)
-        labels["movement_detail"].set(detail)
+        labels["movement_detail"].set(self._short(detail, 298, 13.5))
         self._movement_bar.set(amount, color)
+        if quantum_active:
+            self._quantum_group.show()
+            self._quantum_meter.show()
+            self._quantum_bar.set(amount, color)
+            if quantum_phase == "transit":
+                remaining = self._quantum_distance(quantum.get("remaining", 0))
+                eta = self._quantum_eta(quantum.get("eta", 0))
+                quantum_detail = f"{amount:.0%}  /  {remaining} REMAINING  /  ETA {eta}"
+            elif quantum_phase == "cooldown":
+                self._quantum_meter.hide()
+                cooldown = max(0, _number(quantum.get("cooldown", 0)))
+                quantum_detail = f"DRIVE COOLING  /  {cooldown:.1f}S"
+            else:
+                cost = _clamp(quantum.get("cost", 0), 0, 100)
+                calibration = "CALIBRATED" if quantum_phase == "ready" else f"CALIBRATING {amount:.0%}"
+                quantum_detail = f"{calibration}  /  FUEL {cost:.1f}%"
+            labels["quantum_detail"].set(self._short(quantum_detail, 520, 13.5))
+            labels["quantum_detail"].color(color)
+        else:
+            self._quantum_group.hide()
+            labels["quantum_detail"].set("")
         progress = _clamp(view.get("mining_progress", 0))
-        if progress > 0:
+        if progress > 0 and not quantum_active:
             self._mining_group.show()
             self._mining_bar.set(progress)
         else:
@@ -806,14 +891,22 @@ class GameUI:
             self._notice_group.hide()
         controls = view.get("controls")
         if controls is None:
-            controls = ("W Thrust   S Brake/reverse   SHIFT Boost   SPACE/CTRL Rise/dive   E Dock   F Land   M Map   H Help   ESC Menu" if flying else
-                        "WASD Move   SHIFT Sprint   SPACE Jump/jetpack   CTRL Air brake   E Interact   C Scan   I Cargo   H Help   ESC Menu")
+            if quantum_phase == "transit":
+                controls = "Q / E Abort quantum travel   M Map   H Help   ESC Menu"
+            elif quantum_phase in ("spooling", "ready"):
+                quantum_control = "Q Engage quantum" if quantum_phase == "ready" else "Q Cancel spool"
+                controls = quantum_control + "   W Thrust   S Brake/reverse   M Map   H Help   ESC Menu"
+            elif flying:
+                quantum_control = "Q Quantum   " if quantum.get("target") or view.get("target") else ""
+                controls = quantum_control + "W Thrust   S Brake/reverse   SHIFT Boost   SPACE/CTRL Rise/dive   E Dock   F Land   M Map   H Help   ESC Menu"
+            else:
+                controls = "WASD Move   SHIFT Sprint   SPACE Jump/jetpack   CTRL Air brake   E Interact   C Scan   I Cargo   H Help   ESC Menu"
         labels["controls"].set(self._short(controls, self.width - 84, 13 if compact else 14))
         fps = view.get("fps")
         labels["fps"].set(f"{_number(fps):.0f} FPS" if fps is not None else "")
         if flying:
             self._cockpit.show()
-            labels["flight_speed"].set(f"VEL {speed:.0f}")
+            labels["flight_speed"].set(f"VEL {speed:.0f}" if speed < 100000 else f"VEL {speed / 1000:.0f}k")
             labels["flight_altitude"].set(f"ALT {altitude:.0f}")
             vertical = _number(view.get("radial_speed", view.get("vertical_speed", 0)))
             labels["vertical_speed"].set(f"V/S {vertical:+.1f}")

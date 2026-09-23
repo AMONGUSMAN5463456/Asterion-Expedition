@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "tests": 10,
+  "combined_unique_tests": 326,
+  "checks": [
+    {
+      "command": ".venv/bin/python -m unittest tests.test_quantum_presentation -v",
+      "passed": true,
+      "tests": 8,
+      "seconds": 0.483
+    },
+    {
+      "command": ".venv/bin/python -m unittest tests.test_quantum_integration.QuantumIntegrationTests.test_active_drive_blocks_approach_and_fold_without_spending_cells -v",
+      "passed": true,
+      "tests": 1,
+      "seconds": 19.090
+    },
+    {
+      "command": ".venv/bin/python -m unittest tests.test_quantum_integration.QuantumIntegrationTests.test_quantum_keys_work_while_flight_modifiers_are_held -v",
+      "passed": true,
+      "tests": 1,
+      "seconds": 16.011
+    }
+  ]
+}

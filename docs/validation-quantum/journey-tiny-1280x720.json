@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "renderer": "tiny",
+  "size": [
+    1280,
+    720
+  ],
+  "route_metres": 240415,
+  "transit_seconds": 5.87,
+  "fuel": 5.4,
+  "arrival_altitude": 3500.01,
+  "captures": [
+    "navigation-tiny-1280x720.png",
+    "spooling-tiny-1280x720.png",
+    "ready-tiny-1280x720.png",
+    "transit-tiny-1280x720.png",
+    "arrival-tiny-1280x720.png"
+  ]
+}

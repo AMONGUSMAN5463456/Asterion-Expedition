@@ -19,6 +19,9 @@ WASD moves, mouse looks, C scans, hold left mouse to mine.
 Tap Space to jump; hold it for jetpack. Ctrl brakes in the air;
 Space + Ctrl hovers. Settings adjusts FOV, camera motion and flight assist.
 E or F boards your ship; Space climbs. Climb continuously through clouds and haze into orbit.
+For quantum travel, climb above 3,000 m, open M and choose QUANTUM TARGET on a planet.
+Q spools and aligns; press Q again at READY to engage. Q or E aborts travel.
+Quantum uses ordinary ship fuel and stops in orbit near the destination.
 Fly directly back into the atmosphere; F lands below 65 m and 48 m/s.
 M opens navigation, K crafting, I cargo, J the journal, B construction.
 Esc pauses and offers free rescue if needed. F5 saves.

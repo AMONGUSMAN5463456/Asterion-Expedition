@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "renderer": "gl",
+  "size": [
+    960,
+    540
+  ],
+  "route_metres": 240415,
+  "transit_seconds": 5.87,
+  "fuel": 5.4,
+  "arrival_altitude": 3500.01,
+  "captures": [
+    "navigation-gl-960x540.png",
+    "spooling-gl-960x540.png",
+    "ready-gl-960x540.png",
+    "transit-gl-960x540.png",
+    "arrival-gl-960x540.png"
+  ]
+}

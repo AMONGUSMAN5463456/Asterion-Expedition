@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import os
+from itertools import combinations
 from pathlib import Path
 import sys
 import time
@@ -22,6 +23,7 @@ from .controller import PlayerController
 from .effects import PlayerEffects
 from .geometry import make_ship
 from .navigation import plan_route
+from .quantum import QuantumDrive
 from .planetary import (PlanetFrame, PlanetField, frame_to_world, frame_to_local,
                        vector_to_world, vector_to_local, direction_chart, chart_direction)
 from .state import GameState
@@ -93,6 +95,8 @@ class ExpeditionApp(ShowBase):
         self.ship = None
         self.beam = None
         self.autopilot = None
+        self.quantum = QuantumDrive()
+        self.quantum_target = None
         self.transition = None
         self.transition_elapsed = 0.0
         self.transition_done = False
@@ -122,6 +126,7 @@ class ExpeditionApp(ShowBase):
         mapping = {
             "escape": self.pause, "e": self.interact, "f": self.flight_action,
             "c": self.scan, "r": self.recharge, "x": self.recall_ship,
+            "q": self.quantum_action,
             "i": lambda: self.toggle_panel("inventory"), "tab": lambda: self.toggle_panel("inventory"),
             "k": lambda: self.toggle_panel("craft"), "m": lambda: self.toggle_panel("map"),
             "j": lambda: self.toggle_panel("journal"), "b": lambda: self.toggle_panel("build"),
@@ -130,6 +135,14 @@ class ExpeditionApp(ShowBase):
         }
         for key, method in mapping.items():
             self.accept(key, method)
+        # Flight modifiers remain physically held after boost or descent.
+        # Panda prefixes those key events, including emergency drive dropout.
+        modifiers = ("shift", "control", "alt", "meta")
+        for count in range(1, len(modifiers) + 1):
+            for group in combinations(modifiers, count):
+                prefix = "-".join(group) + "-"
+                self.accept(prefix + "q", self.quantum_action)
+                self.accept(prefix + "e", self.interact)
         self.accept("window-event", self._window_event)
 
     def _window_event(self, window):
@@ -303,6 +316,7 @@ class ExpeditionApp(ShowBase):
         self.world.update(0, self.controller.position, self.game.elapsed, 0)
 
     def new_game(self):
+        self._reset_quantum()
         preferences = dict(self.game.settings)
         self.game = GameState()
         self.game.settings.update(preferences)
@@ -318,6 +332,7 @@ class ExpeditionApp(ShowBase):
         if not self.save_path.exists():
             return self.new_game()
         self.game = GameState.load(self.save_path)
+        self._reset_quantum()
         self.started = True
         self.autopilot = None
         if self.game.mode in ("orbit", "flight"):
@@ -335,7 +350,9 @@ class ExpeditionApp(ShowBase):
         self.game.mode = self.controller.mode
         self.game.coordinate_version = 2
         self.game.frame_up = list(self.frame.normal) if self.frame else None
-        self.game.velocity = list(self.controller.velocity)
+        # A quantum course is transient. Reload at this physical position in
+        # manual flight, without leaking quantum momentum into normal physics.
+        self.game.velocity = [0.0, 0.0, 0.0] if self.quantum.active else list(self.controller.velocity)
         self.game.reference_roll = float(self.controller.reference_roll)
 
     def save_game(self, announce=True):
@@ -452,6 +469,7 @@ class ExpeditionApp(ShowBase):
         """
         if restoring:
             return self._restore_flight()
+        self._reset_quantum()
         self._remove_ship()
         self.system = generate_system(self.game.system_id)
         self.planet = self.system["planets"][self.game.planet_index]
@@ -545,6 +563,9 @@ class ExpeditionApp(ShowBase):
         if self.controller.mode == "surface":
             self.toast("Board your ship before plotting a planetary approach.")
             return False
+        if self.quantum.active:
+            self.toast("Press Q or E to cancel quantum travel before plotting an approach.", "alert")
+            return False
         planet = self.system["planets"][int(planet_index)]
         destination = {"kind": "planet", "position": planet["position"], "size": planet["size"],
                        "index": planet["index"], "name": planet["name"]}
@@ -560,6 +581,7 @@ class ExpeditionApp(ShowBase):
         pos = self._safe_surface_position((sx + 10, sy - 2, self.world.height(sx + 10, sy - 2) + 1.8))
         self.controller.set_mode("surface", pos, self.controller.heading, 0)
         self.autopilot = None
+        self._reset_quantum()
         self.game.visit(self.planet)
         self._update_flight_environment()
         self.toast(f"Touchdown on {self.planet['name']}. E boards your ship.", "land", 6)
@@ -568,6 +590,9 @@ class ExpeditionApp(ShowBase):
 
     def flight_action(self):
         if not self.playing:
+            return
+        if self.quantum.active:
+            self.toast("Quantum drive controls the ship. Q or E cancels.")
             return
         if self.controller.mode == "surface":
             self.launch()
@@ -586,6 +611,7 @@ class ExpeditionApp(ShowBase):
     def rescue(self):
         if not self.started:
             return
+        self._reset_quantum()
         if hasattr(self.game, "rescue"):
             result = self.game.rescue()
             message = result[1] if isinstance(result, tuple) and len(result) > 1 else "Rescue complete. Equipment and cargo recovered."
@@ -675,6 +701,9 @@ class ExpeditionApp(ShowBase):
     def interact(self):
         if not self.playing:
             return
+        if self.quantum.active:
+            self._cancel_quantum()
+            return
         if self.autopilot:
             self.autopilot = None
             self.toast("Automatic approach cancelled. Manual flight resumed.")
@@ -734,6 +763,10 @@ class ExpeditionApp(ShowBase):
 
     def _mine(self, dt):
         self._clear_beam()
+        if self.quantum.active:
+            self.mine_time = 0
+            self.mine_id = ""
+            return
         entity = self.target
         if not self.controller.mouse_down or not entity or entity["kind"] not in ("mineral", "flora", "asteroid"):
             self.mine_time = 0
@@ -808,6 +841,168 @@ class ExpeditionApp(ShowBase):
         if min(v["oxygen"], v["hazard"]) < 20 and self.low_warning <= 0:
             self.toast("Suit reserves low. R recharges. Ships and outposts provide shelter.", "alert", 7)
             self.low_warning = 25
+
+    def _reset_quantum(self):
+        """Discard a transient course when replacing the expedition/location."""
+        self.quantum = QuantumDrive()
+        self.quantum_target = None
+
+    def _stop_quantum_motion(self):
+        self.controller.velocity = Vec3(0)
+        self.controller.speed = self.controller.throttle = self.controller.vertical_speed = 0.0
+        self.controller.boosting = self.controller.braking = self.controller.drifting = False
+        self.controller.camera_roll = self.controller.fov_offset = 0.0
+        self.controller.reset_keys()
+        self.camLens.setFov(self.game.settings.get("fov", 78))
+
+    def _cancel_quantum(self):
+        if not self.quantum.active:
+            return False
+        self.quantum.cancel(self.world_position())
+        self._stop_quantum_motion()
+        self.toast("Quantum drive disengaged. Manual flight restored.", "ui")
+        return True
+
+    def select_quantum_target(self, planet_index):
+        """Select a local-system destination without moving or spending fuel."""
+        if (not self.started or self.transition or self.controller.mode == "surface" or
+                isinstance(planet_index, bool) or not isinstance(planet_index, int) or
+                not 0 <= planet_index < len(self.system["planets"])):
+            return False
+        if self.quantum.active:
+            self.toast("Press Q or E to cancel the current quantum course first.", "alert")
+            return False
+        planet = self.system["planets"][planet_index]
+        self.quantum_target = {"index": planet_index, "id": planet["id"],
+                               "name": planet["name"], "position": planet["position"]}
+        if self.autopilot:
+            self.autopilot = None
+            self._stop_quantum_motion()
+        self.navigation = None
+        self.close_panel()
+        self.toast(f"Quantum target: {planet['name']}. Climb above 3 km, then Q spools and aligns the drive.", "scan", 7)
+        return True
+
+    def _quantum_route(self):
+        start = self.world_position()
+        planet = self.system["planets"][self.quantum_target["index"]]
+        field = self.world.fields[planet["id"]]
+        normal = start - field.center
+        if normal.length() < .01:
+            return []
+        normal.normalize()
+        # Stop over the facing hemisphere, clear of both terrain and air.
+        goal = field.center + normal * (field.radius + field.elevation(normal) + 3500)
+        if (goal - start).length() < 5000:
+            self.toast("Already near this destination. Fly down to land, or select another planet with M.")
+            return []
+        obstacles = [{"id": p["id"], "center": p["position"], "radius": p["size"] + 2800}
+                     for p in self.system["planets"]]
+        obstacles += [{"id": e["id"], "center": frame_to_world(self.frame, e["pos"]),
+                       "radius": e.get("radius", 20) + 35}
+                      for e in self.world.interactables() if e["kind"] == "asteroid"]
+        obstacles.append({"id": "exchange", "center": self.system["station"], "radius": 250})
+        route = plan_route(start, goal, obstacles)
+        if not route:
+            self.toast("Quantum route obstructed. Move into open space and press Q to plot again.", "alert")
+        return route
+
+    def quantum_action(self):
+        """Q spools, engages a calibrated drive, or drops out of transit."""
+        if not self.playing:
+            return False
+        drive = self.quantum
+        if drive.phase in ("spooling", "transit"):
+            return self._cancel_quantum()
+        if drive.phase == "cooldown":
+            self.toast(f"Quantum drive cooling: {drive.cooldown_remaining:.1f} s remaining.")
+            return False
+        if self.controller.mode != "orbit" or self.atmosphere_data["altitude"] < 3000:
+            self.toast("Quantum drive requires open space above 3 km. Launch and climb with Space + Shift.", "alert")
+            return False
+        if drive.phase == "ready":
+            if not drive.launch(self.game.vitals["fuel"]):
+                self.toast(f"Quantum drive needs {drive.cost:.1f} fuel. R refuels; E cancels.", "alert")
+                return False
+            self.game.vitals["fuel"] = max(0.0, self.game.vitals["fuel"] - drive.cost)
+            self.controller.reset_keys()
+            self.toast(f"Quantum travel engaged: {drive.target_name}. Q or E drops out.", "warp", 5)
+            return True
+        if self.quantum_target is None:
+            self.open_panel("map")
+            self.toast("Choose QUANTUM TARGET beside a planet, then press Q to spool.")
+            return False
+        route = self._quantum_route()
+        if not route:
+            return False
+        if not drive.begin(self.world_position(), route, target_name=self.quantum_target["name"], fuel=self.game.vitals["fuel"]):
+            self.toast("Not enough fuel for this quantum route. Press R to refuel, or craft Launch Cells with K.", "alert")
+            return False
+        self.autopilot = None
+        self._stop_quantum_motion()
+        self._clear_beam()
+        self.mine_time = 0
+        self.toast(f"Spooling quantum drive / aligning to {drive.target_name}. E cancels.", "launch", 4)
+        return True
+
+    def _align_quantum(self, direction, dt):
+        if direction.lengthSquared() < .000001 or dt <= 0:
+            return
+        marker = NodePath("quantum-attitude")
+        marker.lookAt(direction, self.camera.getQuat().getUp())
+        target, current = marker.getQuat(), self.camera.getQuat()
+        marker.removeNode()
+        if current.dot(target) < 0:
+            target = -target
+        blend = 1 - math.exp(-5 * dt)
+        attitude = current * (1 - blend) + target * blend
+        attitude.normalize()
+        self.controller.heading, self.controller.pitch, self.controller.reference_roll = map(float, attitude.getHpr())
+        self.controller.camera_roll = 0
+        self.camera.setQuat(attitude)
+
+    def _update_quantum(self, dt):
+        drive = self.quantum
+        phase = drive.phase
+        if not drive.active:
+            drive.advance(dt)
+            return False
+        drive.advance(dt)
+        if phase == "transit":
+            # One tick can traverse several route legs. Sweep each in order;
+            # sweeping their chord could cut straight through a planet.
+            for point in drive.motion_points:
+                goal = frame_to_local(self.frame, point)
+                result = self.world.move_sphere(self.controller.position, goal - self.controller.position, radius=3)
+                self.controller.position = Vec3(result.position)
+                self.camera.setPos(self.controller.position)
+                if result.hit_ids or (goal - result.position).length() > .15:
+                    drive.cancel(self.world_position())
+                    self._stop_quantum_motion()
+                    self.controller.collision_feedback = 1
+                    self.toast("Quantum safety dropout: obstruction detected. Steer clear before plotting again.", "alert", 7)
+                    return True
+            self.controller.velocity = vector_to_local(self.frame, drive.velocity)
+            self.controller.speed = self.controller.velocity.length()
+            self.controller.vertical_speed = self.controller.velocity.z
+            self.controller.throttle = 1.0 if drive.travelling else 0.0
+            if not drive.travelling:
+                self._stop_quantum_motion()
+                self.planet = self.system["planets"][self.quantum_target["index"]]
+                self.game.planet_index = self.planet["index"]
+                self.toast(f"Quantum arrival: {drive.target_name}. Fly down to land, or M for automatic approach.", "land", 8)
+                self.save_game(announce=False)
+        self._align_quantum(vector_to_local(self.frame, drive.next_direction), dt)
+        if phase == "spooling" and drive.phase == "ready":
+            self.toast(f"Quantum calibrated. Q engages / {drive.cost:.1f} fuel / {drive.eta:.0f} s. E cancels.", "scan", 8)
+        return True
+
+    def _quantum_view(self):
+        drive = self.quantum
+        return {"phase": drive.phase, "target": self.quantum_target["name"] if self.quantum_target else "",
+                "progress": drive.progress, "spool_progress": drive.spool_progress,
+                "remaining": drive.remaining, "eta": drive.eta, "cost": drive.cost,
+                "cooldown": drive.cooldown_remaining}
 
     def _plan_approach(self, destination):
         """Plan in system coordinates; fly every climb, cruise and descent metre."""
@@ -951,7 +1146,7 @@ class ExpeditionApp(ShowBase):
             phase = (self.game.elapsed + (self.planet["seed"] % 40)) % 330
             self.storm = min(1, max(0, (phase - 245) / 20), max(0, (325 - phase) / 20)) if self.controller.mode != "orbit" else 0
             self._update_flight_environment()
-            if not self._update_autopilot(dt):
+            if not self._update_quantum(dt) and not self._update_autopilot(dt):
                 self.controller.update(dt, self.world.height, self.game.vitals,
                                        self.game.upgrades, self.game.settings, enabled=True,
                                        gravity=self.planet.get("gravity", 12))
@@ -977,7 +1172,10 @@ class ExpeditionApp(ShowBase):
                             scanner=self.scanner_time > 0,
                             camera_motion=self.game.settings.get("camera_motion", .35),
                             boosting=self.controller.boosting, braking=self.controller.braking,
-                            collision_feedback=self.controller.collision_feedback)
+                            collision_feedback=self.controller.collision_feedback,
+                            quantum_phase=self.quantum.phase,
+                            quantum_progress=(self.quantum.spool_progress if self.quantum.phase in ("spooling", "ready")
+                                              else self.quantum.progress))
         self.hud_time += dt
         self.visuals.update()
         self.exploration_vfx.update(dt if self.playing else 0)
@@ -1011,7 +1209,7 @@ class ExpeditionApp(ShowBase):
         if mode == "flight":
             prompt = "W thrust  S brake  Space ascend  Ctrl descend  Shift boost  F land"
         if mode == "orbit":
-            prompt = "Fly through atmosphere  M navigation  E dock  Shift boost  LMB mine asteroids"
+            prompt = "M navigation  Q quantum drive  E dock  Shift boost  LMB mine asteroids"
         if self.autopilot:
             name = f"APPROACH // {self.autopilot['name']}"
             prompt = "E cancels automatic approach"
@@ -1023,6 +1221,25 @@ class ExpeditionApp(ShowBase):
             objective = {"title": "WAYPOINT // " + self.navigation["name"],
                          "description": f"{d.length():.0f} m away. Bearing {(math.degrees(math.atan2(-d.x, d.y)) % 360):.0f} deg. M selects another location.",
                          "progress": "Surface navigation"}
+        quantum = self._quantum_view()
+        if self.quantum_target and mode != "surface" and not self.autopilot:
+            planet = self.system["planets"][self.quantum_target["index"]]
+            remaining = max(0, distance(self.world_position(), planet["position"]) - planet["size"])
+            phase = self.quantum.phase
+            name = f"QUANTUM // {planet['name']}  /  {remaining / 1000:.1f} km"
+            instructions = {
+                "idle": "Q spools and aligns the drive above 3 km. M changes destination.",
+                "spooling": "Holding position while the drive spools and aligns. Q or E cancels.",
+                "ready": f"Q engages / {self.quantum.cost:.1f} fuel. E cancels calibration.",
+                "transit": f"{self.quantum.remaining / 1000:.1f} km remaining / {self.quantum.eta:.1f} s. Q or E drops out.",
+                "cooldown": "Manual flight available. Fly down to land, or M plots an approach.",
+            }
+            objective = {"title": "QUANTUM // " + planet["name"],
+                         "description": instructions[phase],
+                         "progress": (f"COOLDOWN / {self.quantum.cooldown_remaining:.1f} s" if phase == "cooldown"
+                                      else f"DRIVE {phase.upper()}")}
+            if self.quantum.active:
+                prompt = instructions[phase]
         duration = max(.25, float(self.target.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35)) if self.target else 1
         return {"mode": mode, "location": self.system["name"] if mode == "orbit" else self.planet["name"],
                 "biome": "INTERPLANETARY SPACE" if mode == "orbit" else self.planet["biome"].upper(),
@@ -1032,6 +1249,7 @@ class ExpeditionApp(ShowBase):
                 "density": self.atmosphere_data["density"], "space_blend": self.atmosphere_data["space_blend"],
                 "entry_heat": self.atmosphere_data["heat"], "radial_speed": self.atmosphere_data["radial_speed"],
                 "flight_phase": self._flight_phase(), "atmosphere_name": self.planet["name"],
+                "quantum": quantum,
                 "vitals": self.game.vitals, "credits": self.game.credits, "cargo": self.game.cargo_used(),
                 "capacity": self.game.capacity(), "target": name, "prompt": prompt,
                 "objective": objective, "notice": self.notice if self.notice_time else "", "scanner": bool(self.scanner_time),
@@ -1141,8 +1359,9 @@ class ExpeditionApp(ShowBase):
                     visited = planet["id"] in g.visited
                     rows.append({"title": planet["name"], "body": planet["description"] + "\nResources: " + ", ".join(ITEMS[i]["name"] for i in planet["resources"]),
                                  "meta": f"{planet['temperature']:+.0f} C  |  {planet['biome'].upper()}  |  {'SURVEYED' if visited else 'UNCHARTED'}",
-                                 "buttons": [self.button("APPROACH & LAND", "travel", planet["index"], self.controller.mode != "surface")]})
-                footer = "Surface: follow a waypoint. Flight: automatic approach climbs, cruises and descends continuously; E cancels."
+                                 "buttons": [self.button("QUANTUM TARGET", "quantum_target", planet["index"], self.controller.mode != "surface"),
+                                             self.button("APPROACH & LAND", "travel", planet["index"], self.controller.mode != "surface")]})
+                footer = "Quantum: select a planet, climb above 3 km, Q spools, Q engages. E cancels. Approach & Land flies to the surface."
         elif kind == "journal":
             title, subtitle = "The listening network", f"{min(g.story_stage, len(STORY))} / {len(STORY)} expedition chapters completed"
             buttons = [self.button("DISCOVERIES", "open", "discoveries"), self.button("CONTRACTS", "open", "contracts")]
@@ -1249,7 +1468,8 @@ class ExpeditionApp(ShowBase):
                 {"title": "01 / Start with a survey", "body": "Walk with WASD; look with the mouse or arrow keys. Shift sprints. Tap Space to jump; hold to engage the jetpack. Ctrl brakes in the air, and Space + Ctrl hovers. C surveys; hold left mouse to extract a visible deposit.", "meta": "C scan  |  LMB mine  |  Shift sprint", "buttons": []},
                 {"title": "02 / Supplies and equipment", "body": "I or Tab opens cargo. K opens the fabricator. Craft Launch Cells from carbon and ferrite; Fold Cells from copper, crystal, and carbon. R uses suitable supplies to recharge a depleted reserve.", "meta": "I cargo  |  K crafting  |  R recharge", "buttons": []},
                 {"title": "03 / Take to the sky", "body": "Approach the ship and press E or F. W adds thrust; S brakes. Mouse or arrow keys steer. Space climbs, Ctrl descends, Shift boosts. Keep climbing through the cloud layer and thinning atmosphere to reach space without a loading screen. Press X on foot to recall your ship.", "meta": "E / F launch  |  X recall  |  Space climb", "buttons": []},
-                {"title": "04 / Find another world", "body": "In orbit, M opens the chart. Select APPROACH & LAND to fly automatically to a planet, or fly directly through its atmosphere. Descend below 65 m and brake below 48 m/s, then press F to land. Choose GALAXY to spend a Fold Cell traveling to another system. E cancels automatic approach.", "meta": "M navigation  |  F low-altitude landing", "buttons": []},
+                {"title": "04 / Quantum travel", "body": "M opens the chart. Choose QUANTUM TARGET beside a planet, climb above 3 km, then press Q to spool and automatically align. When calibrated, press Q again to engage. The drive uses ship fuel, follows a safe route, and stops 3.5 km above the destination. Q or E cancels; after transit the drive cools for four seconds. Menus pause the drive. Reloading a transit save restores your position at rest.", "meta": "M destination  |  Q spool / engage / dropout  |  E cancel", "buttons": []},
+                {"title": "04b / Approach and interstellar travel", "body": "After quantum arrival, fly through the atmosphere or choose APPROACH & LAND in M. Descend below 65 m and brake below 48 m/s, then F lands. Choose GALAXY to spend a Fold Cell traveling to another system. E cancels automatic approach.", "meta": "Shift boost  |  F low-altitude landing  |  M galaxy", "buttons": []},
                 {"title": "05 / Land, trade, investigate", "body": "In atmospheric flight, slow below 48 m/s and descend below 65 m, then F lands. E interacts with nearby outposts, signal ruins, or stations. Markets buy and sell supplies, and the journal tracks your expedition and contracts.", "meta": "E interact  |  J expedition log", "buttons": []},
                 {"title": "06 / Make a place to return to", "body": "B opens construction. Buildings are placed 12 m ahead. Move between builds to arrange your outpost. Habitats provide shelter; extractors and gardens accumulate materials. Collect their output from the construction panel.", "meta": "B construction  |  M surface waypoints", "buttons": []},
                 {"title": "07 / A resilient expedition", "body": "Shelter near your ship or an outpost restores oxygen and climate protection. Esc offers emergency rescue if supplies run out. Menus pause time. Automatic saves occur every minute; F5 saves and F9 opens reload confirmation.", "meta": "Esc pause / rescue  |  F5 save  |  F9 reload", "buttons": []},
@@ -1325,7 +1545,12 @@ class ExpeditionApp(ShowBase):
                                "world_pos": list(frame_to_world(self.frame, payload["pos"]))}
             self.close_panel()
             self.toast(f"Waypoint set: {self.navigation['name']}", "scan")
+        elif action == "quantum_target" and self.started:
+            self.select_quantum_target(payload)
         elif action in ("travel", "approach_station") and self.started:
+            if self.quantum.active:
+                self.toast("Close the chart and press Q or E to cancel quantum travel first.", "alert")
+                return
             if self.controller.mode == "surface":
                 self.toast("Board and launch before setting an interplanetary approach.")
                 return
@@ -1340,6 +1565,9 @@ class ExpeditionApp(ShowBase):
             if self._plan_approach(self.autopilot):
                 self.toast(f"Automatic approach engaged: {self.autopilot['name']}. E cancels.", "launch", 7)
         elif action == "warp" and self.started:
+            if self.quantum.active:
+                self.toast("Close the chart and press Q or E to cancel quantum travel before folding.", "alert")
+                return
             if self.controller.mode != "orbit" or not isinstance(payload, int) or isinstance(payload, bool) or not 0 <= payload < 24 or payload == self.game.system_id:
                 self.toast("Select a different star system while in orbit.")
                 return

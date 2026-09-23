@@ -1,0 +1,163 @@
+{
+  "status": "passed",
+  "tests": 316,
+  "seconds": 335.93,
+  "modules": [
+    {
+      "module": "test_atmosphere_effects.py",
+      "passed": true,
+      "tests": 9,
+      "seconds": 0.38
+    },
+    {
+      "module": "test_collision.py",
+      "passed": true,
+      "tests": 34,
+      "seconds": 0.17
+    },
+    {
+      "module": "test_controller.py",
+      "passed": true,
+      "tests": 17,
+      "seconds": 0.28
+    },
+    {
+      "module": "test_flight_v12.py",
+      "passed": true,
+      "tests": 11,
+      "seconds": 0.29
+    },
+    {
+      "module": "test_geometry_art.py",
+      "passed": true,
+      "tests": 6,
+      "seconds": 1.01
+    },
+    {
+      "module": "test_graphics.py",
+      "passed": true,
+      "tests": 15,
+      "seconds": 48.32
+    },
+    {
+      "module": "test_graphics_streaming.py",
+      "passed": true,
+      "tests": 2,
+      "seconds": 1.04
+    },
+    {
+      "module": "test_integration.py",
+      "passed": true,
+      "tests": 24,
+      "seconds": 334.65
+    },
+    {
+      "module": "test_interface.py",
+      "passed": true,
+      "tests": 11,
+      "seconds": 0.67
+    },
+    {
+      "module": "test_movement_v11.py",
+      "passed": true,
+      "tests": 20,
+      "seconds": 0.44
+    },
+    {
+      "module": "test_navigation.py",
+      "passed": true,
+      "tests": 14,
+      "seconds": 0.29
+    },
+    {
+      "module": "test_packaging.py",
+      "passed": true,
+      "tests": 16,
+      "seconds": 0.48
+    },
+    {
+      "module": "test_planet_weather.py",
+      "passed": true,
+      "tests": 6,
+      "seconds": 1.31
+    },
+    {
+      "module": "test_planetary.py",
+      "passed": true,
+      "tests": 15,
+      "seconds": 0.74
+    },
+    {
+      "module": "test_planetary_v13.py",
+      "passed": true,
+      "tests": 7,
+      "seconds": 1.04
+    },
+    {
+      "module": "test_quantum.py",
+      "passed": true,
+      "tests": 12,
+      "seconds": 0.16
+    },
+    {
+      "module": "test_quantum_integration.py",
+      "passed": true,
+      "tests": 9,
+      "seconds": 131.34
+    },
+    {
+      "module": "test_save_v12.py",
+      "passed": true,
+      "tests": 15,
+      "seconds": 0.37
+    },
+    {
+      "module": "test_save_v13.py",
+      "passed": true,
+      "tests": 9,
+      "seconds": 0.28
+    },
+    {
+      "module": "test_seamless_integration.py",
+      "passed": true,
+      "tests": 8,
+      "seconds": 115.28
+    },
+    {
+      "module": "test_seamless_world.py",
+      "passed": true,
+      "tests": 6,
+      "seconds": 71.39
+    },
+    {
+      "module": "test_surface_materials.py",
+      "passed": true,
+      "tests": 6,
+      "seconds": 0.84
+    },
+    {
+      "module": "test_systems.py",
+      "passed": true,
+      "tests": 26,
+      "seconds": 0.38
+    },
+    {
+      "module": "test_terrain_v13.py",
+      "passed": true,
+      "tests": 8,
+      "seconds": 8.24
+    },
+    {
+      "module": "test_visual_pipeline.py",
+      "passed": true,
+      "tests": 3,
+      "seconds": 0.25
+    },
+    {
+      "module": "test_world.py",
+      "passed": true,
+      "tests": 7,
+      "seconds": 31.26
+    }
+  ]
+}
