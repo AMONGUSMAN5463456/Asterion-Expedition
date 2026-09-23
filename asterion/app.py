@@ -650,15 +650,21 @@ class ExpeditionApp(ShowBase):
         nearby_dist = 1e9
         scan_range = 100 * (1 + self.game.upgrades.get("scanner", 0) * .4)
         max_range = 1100 if self.controller.mode == "orbit" else (scan_range if self.scanner_time else 38)
+        surface = self.controller.mode != "orbit"
         for entity in self.world.interactables():
-            center = Vec3(*entity["pos"])
-            radius = float(entity.get("radius", 2))
-            if self.controller.mode != "orbit":
-                center.z += min(radius * .6, 4)
-            offset = center - p
-            length = offset.length()
             kind = entity["kind"]
             interaction_range = 650 if kind == "station" else 18
+            radius = float(entity.get("radius", 2))
+            x, y, z = entity["pos"]
+            if surface:
+                z += min(radius * .6, 4)
+            dx, dy, dz = x - p.x, y - p.y, z - p.z
+            distance_squared = dx * dx + dy * dy + dz * dz
+            if distance_squared > max(max_range, interaction_range) ** 2:
+                continue
+            length = math.sqrt(distance_squared)
+            center = Vec3(x, y, z)
+            offset = center - p
             if kind in ("outpost", "ruin", "beacon", "station", "habitat", "extractor", "solar") and length < interaction_range and length < nearby_dist:
                 nearby, nearby_dist = entity, length
             if length > max_range or length < .01:
@@ -1242,6 +1248,7 @@ class ExpeditionApp(ShowBase):
                 prompt = instructions[phase]
         duration = max(.25, float(self.target.get("hardness", 1)) * .8 / (1 + self.game.upgrades.get("mining", 0) * .35)) if self.target else 1
         return {"mode": mode, "location": self.system["name"] if mode == "orbit" else self.planet["name"],
+                "fps": None if self.offscreen else ClockObject.getGlobalClock().getAverageFrameRate(),
                 "biome": "INTERPLANETARY SPACE" if mode == "orbit" else self.planet["biome"].upper(),
                 "coordinates": f"{p.x:+.0f} / {p.y:+.0f}", "speed": self.controller.speed,
                 "altitude": self.atmosphere_data["altitude"],
@@ -1459,7 +1466,7 @@ class ExpeditionApp(ShowBase):
                 {"title": "Audio volume", "body": "Original ambient soundscape, engine sounds, and interface tones.", "meta": f"{s.get('volume', .45):.0%}",
                  "buttons": [self.button("QUIETER", "setting", {"key": "volume", "value": max(0, s.get("volume", .45) - .1)}),
                              self.button("LOUDER", "setting", {"key": "volume", "value": min(1, s.get("volume", .45) + .1)})]},
-                {"title": "World detail", "body": "Changes terrain and scenery draw distance. Applies when the next planet loads.", "meta": str(s.get("quality", "medium")).upper(),
+                {"title": "World detail", "body": "Changes terrain and scenery distance and density. LOW disables sun shadows; MEDIUM does so at 1440p and above. Scenery changes when the next planet loads.", "meta": str(s.get("quality", "medium")).upper(),
                  "buttons": [self.button(q.upper(), "setting", {"key": "quality", "value": q}) for q in ("low", "medium", "high")]},
             ]
         elif kind == "help":

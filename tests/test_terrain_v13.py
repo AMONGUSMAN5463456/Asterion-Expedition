@@ -2,6 +2,7 @@
 import math
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from panda3d.core import NodePath
 
@@ -85,6 +86,42 @@ class ContinuousTerrainTests(unittest.TestCase):
         self.world._update_terrain(observer, self.field)
         self.assertGreater(len(records), 6)
         self.assertIsNone(self.world.frame)
+
+    def test_settled_lod_skips_same_view_and_rechecks_after_movement(self):
+        self.globe()
+        direction = (0., 0., 1.)
+        self.world._stream_lod(direction, budget=0, altitude=1e9)
+        self.assertNotIn(self.field.planet_id, self.world._lod_stable)
+        self.world._stream_lod(direction, budget=1, altitude=1e9)
+        with patch('asterion.seamless_world.math.acos',
+                   side_effect=AssertionError('LOD traversal ran')):
+            self.world._stream_lod(direction, budget=1, altitude=1e9)
+            with self.assertRaisesRegex(AssertionError, 'LOD traversal ran'):
+                self.world._stream_lod(direction, budget=1, altitude=1e9 - 1)
+            with self.assertRaisesRegex(AssertionError, 'LOD traversal ran'):
+                self.world._stream_lod((.001, 0., 1.), budget=1, altitude=1e9)
+
+    def test_runtime_lod_separates_selection_from_patch_building(self):
+        records = self.globe()
+        direction = (0., 0., 1.)
+        self.world._stream_lod(direction, budget=100, altitude=3)
+        self.assertGreater(len(records), 100)
+        self.assertNotIn(self.field.planet_id, self.world._lod_pending)
+        before = len(records)
+        self.world._stream_lod(direction, budget=1, altitude=3)
+        self.assertEqual(len(records), before)
+        self.assertIn(self.field.planet_id, self.world._lod_ready)
+        self.world._stream_lod(direction, budget=1, altitude=3)
+        self.assertEqual(len(records), before + 1)
+        self.assertIn(self.field.planet_id, self.world._lod_pending)
+        for _ in range(3):
+            self.world._stream_lod(direction, budget=1, altitude=3)
+        self.world._stream_lod(direction, budget=1, altitude=3)
+        self.assertIn(self.field.planet_id, self.world._lod_ready)
+        before = len(records)
+        # A fast-moving observer must not keep postponing every new patch.
+        self.world._stream_lod((.0001, 0., .999999995), budget=1, altitude=3)
+        self.assertEqual(len(records), before + 1)
 
     def test_ground_footprint_reaches_two_metre_spacing_and_retreat_releases_it(self):
         records = self.globe()

@@ -20,6 +20,14 @@ def main() -> int:
                         version=f"Asterion Expedition {__version__} - Celestial")
     parser.add_argument("--smoke-test", action="store_true", help="Run isolated offscreen gameplay checks")
     parser.add_argument("--offscreen", action="store_true", help="Render without a desktop window")
+    parser.add_argument("--width", type=int, default=1280, help="Window width in pixels")
+    parser.add_argument("--height", type=int, default=720, help="Window height in pixels")
+    parser.add_argument("--fullscreen", action="store_true", help="Use a full-screen display")
+    parser.add_argument("--borderless", action="store_true",
+                        help="Use an undecorated window at the requested size")
+    parser.add_argument("--origin-x", type=int, help="Horizontal display position for the window")
+    parser.add_argument("--origin-y", type=int, help="Vertical display position for the window")
+    parser.add_argument("--vsync", action="store_true", help="Synchronize frames to the monitor refresh rate")
     parser.add_argument("--software", action="store_true", help="Use the software renderer")
     parser.add_argument("--screenshot", type=Path, help="Save the last rendered frame as a PNG")
     parser.add_argument("--frames", type=int, default=0, help="Exit after this many frames")
@@ -39,7 +47,8 @@ def main() -> int:
                                 and not ctypes.util.find_library("EGL"))
     config = [
         f"window-title Asterion Expedition v{__version__} - Celestial",
-        "win-size 1280 720", "sync-video true", "gl-version 3 2",
+        f"win-size {max(320,args.width)} {max(240,args.height)}",
+        f"sync-video {'true' if args.vsync else 'false'}", "gl-version 3 2",
         "framebuffer-multisample true", "multisamples 4", "texture-anisotropic-degree 8",
         "show-frame-rate-meter false",
         "textures-power-2 up" if software else "textures-power-2 none",
@@ -48,6 +57,12 @@ def main() -> int:
         "notify-level warning", "default-directnotify-level warning", "model-cache-dir",
         "background-color 0.025 0.04 0.08 1", "text-encoding utf8",
     ]
+    if args.fullscreen:
+        config.append("fullscreen true")
+    if args.borderless:
+        config.append("undecorated true")
+    if args.origin_x is not None or args.origin_y is not None:
+        config.append(f"win-origin {args.origin_x or 0} {args.origin_y or 0}")
     if software:
         config += ["load-display p3tinydisplay", "aux-display p3tinydisplay"]
     elif offscreen and sys.platform.startswith("linux"):

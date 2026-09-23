@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import math
 import random
+import time
+import warnings
 from collections import OrderedDict
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
 
 from panda3d.core import (AmbientLight, BitMask32, DirectionalLight, Fog, Material, Quat,
                           TransparencyAttrib, Vec3)
@@ -23,7 +27,7 @@ from .geometry import (Mesh, building_mesh, crystal_mesh, fauna_mesh, flora_mesh
 from .planet_weather import PlanetWeather, fog_profile
 from .surface_materials import (configure_surface, terrain_albedo,
                                 update_surface_materials)
-from .planetary import (PlanetField, PlanetFrame, chart_direction, direction_chart,
+from .planetary import (PlanetField, PlanetFrame, _unit, chart_direction, direction_chart,
                         _SKIN as _TERRAIN_SKIN,
                         frame_to_local, frame_to_world, vector_to_local,
                         vector_to_world)
@@ -113,6 +117,172 @@ def _ground_cover_mesh(flora, ground, accent, seed):
     return mesh
 
 
+_LOD_WORKER_BUILDERS = {}
+_CHUNK_WORKER_FIELDS = {}
+
+
+def _prepare_lod_patch_worker(planet, key, gpu):
+    """Build terrain data in a separate interpreter, away from the frame GIL."""
+    planet_id = planet["id"]
+    builder, field = _LOD_WORKER_BUILDERS.get(planet_id, (None, None))
+    if builder is None:
+        if len(_LOD_WORKER_BUILDERS) >= 2:
+            _LOD_WORKER_BUILDERS.pop(next(iter(_LOD_WORKER_BUILDERS)))
+        builder = object.__new__(SeamlessWorld)
+        builder._gpu = gpu
+        builder._sample_cache = OrderedDict()
+        field = PlanetField(planet)
+        _LOD_WORKER_BUILDERS[planet_id] = builder, field
+    return builder._prepare_lod_patch(field, key)
+
+
+def _plan_cover(field, key, seed, bounds, center, remote, quality, large_frame):
+    """Preserve the ground-cover random stream while sampling it off-thread."""
+    face = key[0]
+    x0, y0, x1, y1 = bounds
+    rng = random.Random(seed ^ 0xC0FE146)
+    count = {"low": 64, "medium": 96, "high": 192, "ultra": 256}.get(quality, 96)
+    if quality == "medium" and large_frame:
+        count = 72
+    total = count if field.biome not in ("volcanic", "frozen", "desert") else count // 5
+
+    def sample(x, y):
+        direction = _direction(face, x, y, field.radius)
+        u, v = direction_chart(direction, field.radius)
+        return u, v, field.seabed_elevation(direction)
+
+    def clearance(geo, padding):
+        u, v = geo[:2]
+        return (math.hypot(u, v) < 9 + padding or
+                math.hypot(u - 32, v - 62) < 13 + padding or
+                math.hypot(u + 86, v - 108) < 14 + padding or
+                (remote and math.hypot(u - center[0], v - center[1]) < 14 + padding))
+
+    placements = []
+    cluster = None
+    for i in range(total):
+        if i % 5 == 0:
+            cluster = (rng.uniform(x0, x1), rng.uniform(y0, y1))
+        x = max(x0, min(x1, cluster[0] + rng.uniform(-2.2, 2.2)))
+        y = max(y0, min(y1, cluster[1] + rng.uniform(-2.2, 2.2)))
+        geo = sample(x, y)
+        if clearance(geo, .4) or geo[2] < field.water_level + .5:
+            placements.append(None)
+        else:
+            placements.append(("cover", i, geo, rng.uniform(.64, 1.45), rng.uniform(0, 360)))
+    for i in range(18):
+        geo = sample(rng.uniform(x0, x1), rng.uniform(y0, y1))
+        if clearance(geo, .2) or geo[2] < field.water_level + .15:
+            placements.append(None)
+        else:
+            placements.append(("pebble", i, geo, rng.uniform(.45, 1.1), rng.uniform(0, 360)))
+    return placements
+
+
+def _plan_chunk(field, key, quality, large_frame, *, with_cover=False):
+    """Choose deterministic geography and art without touching Panda's scene graph."""
+    planet = field.planet
+    face, cx, cy = key
+    seed = _seed(int(planet["seed"]), cx, cy, face * 101)
+    rng = random.Random(seed)
+    x0, y0 = max(-field.radius, cx * CHUNK_SIZE), max(-field.radius, cy * CHUNK_SIZE)
+    x1, y1 = min(field.radius, (cx + 1) * CHUNK_SIZE), min(field.radius, (cy + 1) * CHUNK_SIZE)
+
+    def geo_at(x, y):
+        direction = _direction(face, x, y, field.radius)
+        u, v = direction_chart(direction, field.radius)
+        return u, v, field.seabed_elevation(direction)
+
+    def location(border=0):
+        x = x0 + (border + rng.random() * (1 - border * 2)) * (x1 - x0)
+        y = y0 + (border + rng.random() * (1 - border * 2)) * (y1 - y0)
+        return geo_at(x, y)
+
+    center = geo_at((x0 + x1) * .5, (y0 + y1) * .5)
+    remote = (cx % 7 == 3 and cy % 7 == 4 and
+              (face != 0 or abs(cx) + abs(cy) > 4) and
+              center[2] > planet["water_level"] + 1)
+
+    def clearance(geo, padding=0):
+        u, v = geo[:2]
+        return (math.hypot(u, v) < 9 + padding or
+                math.hypot(u - 32, v - 62) < 13 + padding or
+                math.hypot(u + 86, v - 108) < 14 + padding or
+                (remote and math.hypot(u - center[0], v - center[1]) < 14 + padding))
+
+    abundance = .6 if planet["biome"] in ("desert", "volcanic", "frozen") else 1.
+    tree_count = int({"low": 8, "medium": 10, "high": 12,
+                      "ultra": 12}.get(quality, 10) * abundance)
+    grass_count = int({"low": 18, "medium": 26, "high": 34,
+                       "ultra": 34}.get(quality, 26) * abundance)
+    if quality == "medium" and large_frame:
+        tree_count, grass_count = int(9 * abundance), int(20 * abundance)
+    trees, grass, rocks, resources = [], [], [], []
+    for i in range(int(12 * abundance)):
+        geo = location()
+        if clearance(geo, 1) or geo[2] < planet["water_level"] + .5:
+            continue
+        scale, heading = rng.uniform(.75, 1.8), rng.uniform(0, 360)
+        if i < tree_count:
+            trees.append((i, geo, scale * (1.25 if STYLES.get(planet["biome"], "fan") == "mushroom" else 1.), heading))
+    for i in range(int(34 * abundance)):
+        geo = location()
+        if clearance(geo) or geo[2] < planet["water_level"]:
+            continue
+        scale, heading = rng.uniform(.65, 1.7), rng.uniform(0, 360)
+        if i < grass_count:
+            grass.append((i, geo, scale, heading))
+    for i in range(9):
+        geo = location()
+        if clearance(geo):
+            continue
+        scale, heading = rng.uniform(.4, 1.7), rng.uniform(0, 360)
+        rocks.append((i, geo, scale, heading))
+    for i in range(7):
+        geo = location(.13)
+        if clearance(geo, 2) or geo[2] < planet["water_level"] + .3:
+            continue
+        resource = planet["resources"][rng.randrange(len(planet["resources"]))]
+        resources.append((i, geo, resource, _seed(seed, cx, cy, i + 1)))
+    fauna = (rng.random() < .34 * float(planet.get("fauna_density", 1)) and
+             not clearance(center, 5) and center[2] > planet["water_level"] + 1)
+    center_direction = chart_direction(center[0], center[1], field.radius)
+    decor_origin = tuple(float(c) * (field.radius + center[2]) for c in center_direction)
+    result = dict(seed=seed, quality=quality, bounds=(x0, y0, x1, y1), center=center,
+                remote=remote, decor_origin=decor_origin, trees=trees,
+                grass=grass, rocks=rocks, resources=resources, fauna=fauna)
+    if with_cover:
+        result["cover_plan"] = _plan_cover(field, key, seed, result["bounds"],
+                                            center, remote, quality, large_frame)
+    return result
+
+
+def _plan_chunk_batch_worker(planet, keys, cover_keys, quality, large_frame):
+    planet_id = planet["id"]
+    field = _CHUNK_WORKER_FIELDS.get(planet_id)
+    if field is None:
+        if len(_CHUNK_WORKER_FIELDS) >= 2:
+            _CHUNK_WORKER_FIELDS.pop(next(iter(_CHUNK_WORKER_FIELDS)))
+        field = _CHUNK_WORKER_FIELDS[planet_id] = PlanetField(planet)
+    plans = {key: _plan_chunk(field, key, quality, large_frame, with_cover=True)
+             for key in keys}
+    covers = {}
+    for key in cover_keys:
+        face, cx, cy = key
+        x0, y0 = max(-field.radius, cx * CHUNK_SIZE), max(-field.radius, cy * CHUNK_SIZE)
+        x1, y1 = min(field.radius, (cx + 1) * CHUNK_SIZE), min(field.radius, (cy + 1) * CHUNK_SIZE)
+        direction = _direction(face, (x0 + x1) * .5, (y0 + y1) * .5, field.radius)
+        u, v = direction_chart(direction, field.radius)
+        center = (u, v, field.seabed_elevation(direction))
+        remote = (cx % 7 == 3 and cy % 7 == 4 and
+                  (face != 0 or abs(cx) + abs(cy) > 4) and
+                  center[2] > planet["water_level"] + 1)
+        seed = _seed(int(planet["seed"]), cx, cy, face * 101)
+        covers[key] = _plan_cover(field, key, seed, (x0, y0, x1, y1),
+                                  center, remote, quality, large_frame)
+    return quality, plans, covers
+
+
 class SeamlessWorld:
     """Facade used by walking, flight, mining and construction alike."""
 
@@ -136,7 +306,17 @@ class SeamlessWorld:
         self._lights = []
         self._surface_groups = {}
         self._chunk_queue = []
+        self._chunk_prefetch_queue = []
+        self._chunk_prefetch_pending = None
+        self._chunk_prefetch_tick = 0
+        self._chunk_stream_busy = False
         self._chunk_center = None
+        self._chunk_plans = {}
+        self._chunk_plan_job = None
+        self._chunk_executor = None
+        self._chunk_async_disabled = False
+        self._chunk_plan_center = None
+        self._chunk_plan_quality = None
         self._near_planet_id = None
         self._model_cache = {}
         self._sample_cache = OrderedDict()
@@ -146,10 +326,21 @@ class SeamlessWorld:
         self._clouds = {}
         self._limbs = {}
         self._weather = {}
+        self._weather_tick = 0
         self._lod = {}
+        self._lod_stable = {}
+        self._lod_pending = {}
+        self._lod_ready = {}
+        self._lod_executor = None
+        self._lod_job = None
+        self._lod_async_disabled = False
+        self._shadow_revision = 0
         self._terrain_planet_id = None
         self._detail_textures = {}
         self._radius = 2
+        self._large_frame = False
+        self._prefetch_visual_chunks = False
+        self._cover_distance = 130.
         self._last_position = Vec3(0, 0, 22)
         self._landmark_root = None
         self._fog = Fog("continuous-atmosphere")
@@ -211,6 +402,7 @@ class SeamlessWorld:
 
     def set_frame(self, frame):
         self.frame = frame
+        self._weather_tick = 0
         if self.root is None or self.root.isEmpty():
             return
         if frame is None:
@@ -229,8 +421,18 @@ class SeamlessWorld:
             self.ensure_system(generate_system(planet["system_id"]), state)
         self.state, self.planet = state, planet
         self._merge_depletion(state)
-        self._radius = {"low": 2, "medium": 3, "high": 3, "ultra": 4}.get(
-            getattr(state, "settings", {}).get("quality", "medium"), 3)
+        quality = getattr(state, "settings", {}).get("quality", "medium")
+        window = getattr(self.app, "win", None)
+        # Decorated desktop windows lose a few pixels of height to the title
+        # bar, even when the requested content size is 2560 x 1440.
+        large_frame = bool(window and window.getXSize() * window.getYSize() >=
+                           int(2560 * 1440 * .95))
+        self._large_frame = large_frame
+        self._prefetch_visual_chunks = self._gpu and quality == "medium" and large_frame
+        self._radius = {"low": 1, "medium": 1 if large_frame else 2,
+                        "high": 3, "ultra": 4}.get(quality, 2)
+        self._cover_distance = {"low": 105., "medium": 130., "high": 180.,
+                                "ultra": 220.}.get(quality, 130.)
         entering = self._near_planet_id != planet["id"]
         if entering:
             self._clear_surface()
@@ -250,7 +452,9 @@ class SeamlessWorld:
             self._stream_lod(direction, field=field, altitude=altitude,
                              budget=512 if altitude < 180 else 16)
             self._terrain_planet_id = field.planet_id
-        self._stream(position, budget=1)
+        # Build the initial near ring before the player can move; subsequent
+        # boundary crossings still stream one chunk at a time.
+        self._stream(position, budget=1, initial=self._gpu)
         self._ensure_landmarks()
         for record in getattr(state, "bases", {}).get(planet["id"], ()):
             self.add_building(record)
@@ -267,7 +471,6 @@ class SeamlessWorld:
             return 20.
 
     def interactables(self):
-        self._refresh_entities()
         return list(self._entities.values())
 
     def load_surface(self, planet, state):
@@ -281,6 +484,12 @@ class SeamlessWorld:
         self.mode = "orbit"
 
     def destroy(self):
+        if self._chunk_executor is not None:
+            self._chunk_executor.shutdown(wait=False, cancel_futures=True)
+            self._chunk_executor = self._chunk_plan_job = None
+        if self._lod_executor is not None:
+            self._lod_executor.shutdown(wait=False, cancel_futures=True)
+            self._lod_executor = self._lod_job = None
         self.collisions.clear()
         self._space_collisions.clear()
         if self.root is not None and not self.root.isEmpty():
@@ -297,10 +506,22 @@ class SeamlessWorld:
         self._spinners.clear()
         self._lights.clear()
         self._chunk_queue.clear()
+        self._chunk_prefetch_queue.clear()
+        if self._chunk_prefetch_pending is not None:
+            self._chunk_prefetch_pending[2]["root"].removeNode()
+            self._chunk_prefetch_pending = None
+        self._chunk_prefetch_tick = 0
+        self._chunk_plans.clear()
+        self._chunk_plan_job = None
+        self._chunk_plan_center = None
+        self._chunk_plan_quality = None
         self._sample_cache.clear()
         self._model_cache.clear()
         self._detail_textures.clear()
         self._lod.clear()
+        self._lod_stable.clear()
+        self._lod_pending.clear()
+        self._lod_ready.clear()
         self._terrain_planet_id = None
         self._clouds.clear()
         self._limbs.clear()
@@ -313,9 +534,10 @@ class SeamlessWorld:
         key = (field.planet["id"], face, round(x, 7), round(y, 7))
         sample = self._sample_cache.get(key)
         if sample is None:
-            direction = _direction_components(face, x, y, field.radius)
-            height = field.elevation(direction)
-            sample = (direction, height, terrain_albedo(field, direction))
+            direction = _unit(_direction_components(face, x, y, field.radius))
+            terrain = field._samples(*direction)
+            height = max(field.water_level, terrain[0])
+            sample = (direction, height, terrain_albedo(field, direction, sample=terrain))
             self._sample_cache[key] = sample
             if len(self._sample_cache) > 65000:
                 for _ in range(8000):
@@ -379,7 +601,7 @@ class SeamlessWorld:
                          texcoords=(a[3], a[3], b[3]))
         return mesh
 
-    def _make_lod_patch(self, field, key):
+    def _prepare_lod_patch(self, field, key):
         face, level, ix, iy = key
         size = 2 * field.radius / (2 ** level)
         x, y = -field.radius + ix * size, -field.radius + iy * size
@@ -389,17 +611,26 @@ class SeamlessWorld:
         # Close patches need fewer divisions because their physical span shrinks.
         mesh = self._terrain_mesh(field, face, x, y, x + size, y + size,
                                   resolution=24 if level == 0 else 12, origin=origin)
+        cone = max(math.acos(max(-1., min(1., sum(a * b for a, b in zip(normal,
+            _direction_components(face, xx, yy, field.radius))))))
+            for xx, yy in ((x, y), (x + size, y), (x + size, y + size), (x, y + size)))
+        return origin, normal, cone, mesh, (x, y, x + size, y + size)
+
+    def _make_lod_patch(self, field, key, prepared=None):
+        origin, normal, cone, mesh, bounds = (prepared if prepared is not None else
+                                              self._prepare_lod_patch(field, key))
+        face, level, ix, iy = key
         node = mesh.node(f"spherical-terrain-{face}-{level}-{ix}-{iy}",
                          self.body_roots[field.planet["id"]], unlit=True)
         node.setPos(*origin)
         configure_surface(node, field, origin, gpu=self._gpu)
-        cone = max(math.acos(max(-1., min(1., sum(a * b for a, b in zip(normal,
-            _direction_components(face, xx, yy, field.radius))))))
-            for xx, yy in ((x, y), (x + size, y), (x + size, y + size), (x, y + size)))
-        return dict(node=node, bounds=(x, y, x + size, y + size), children=(), pending=(),
+        return dict(node=node, bounds=bounds, children=(), pending=(),
                     normal=normal, cone=cone, origin=origin, balance_for=None, wants_refine=False)
 
     def _make_globe(self, field, parent):
+        self._lod_stable.pop(field.planet_id, None)
+        self._lod_pending.pop(field.planet_id, None)
+        self._lod_ready.pop(field.planet_id, None)
         self._lod[field.planet["id"]] = {
             (face, 0, 0, 0): self._make_lod_patch(field, (face, 0, 0, 0)) for face in range(6)}
 
@@ -433,6 +664,57 @@ class SeamlessWorld:
                     neighbours.add(neighbour)
         return neighbours
 
+    def _add_lod_child(self, field, records, key, prepared=None):
+        face, level, ix, iy = key
+        children = tuple((face, level + 1, ix * 2 + dx, iy * 2 + dy)
+                         for dy in range(2) for dx in range(2))
+        child = children[len(records[key]["pending"])]
+        records[child] = self._make_lod_patch(field, child, prepared)
+        records[child]["node"].hide()
+        records[key]["pending"] += (child,)
+        if len(records[key]["pending"]) == 4:
+            records[key]["children"] = children
+            records[key]["pending"] = ()
+            records[key]["node"].hide()
+            for child in children:
+                records[child]["node"].show()
+            if getattr(self.state, "settings", {}).get("quality") != "low":
+                self._shadow_revision += 1
+        return bool(records[key]["pending"])
+
+    def _queue_lod_child(self, field, records, key, direction, altitude):
+        """Calculate one patch off the render thread; attach it on a later frame."""
+        view = (tuple(direction), altitude, key)
+        if self._lod_async_disabled:
+            if self._add_lod_child(field, records, key):
+                self._lod_pending[field.planet_id] = view
+            else:
+                self._lod_pending.pop(field.planet_id, None)
+            return
+        face, level, ix, iy = key
+        children = tuple((face, level + 1, ix * 2 + dx, iy * 2 + dy)
+                         for dy in range(2) for dx in range(2))
+        child = children[len(records[key]["pending"])]
+        try:
+            if self._lod_executor is None:
+                self._lod_executor = ProcessPoolExecutor(max_workers=1,
+                                                          mp_context=get_context("spawn"))
+            future = self._lod_executor.submit(_prepare_lod_patch_worker, field.planet,
+                                               child, self._gpu)
+        except Exception as exc:
+            warnings.warn(f"Terrain worker unavailable; using main thread: {exc}")
+            self._lod_async_disabled = True
+            if self._lod_executor is not None:
+                self._lod_executor.shutdown(wait=False, cancel_futures=True)
+                self._lod_executor = None
+            if self._add_lod_child(field, records, key):
+                self._lod_pending[field.planet_id] = view
+            else:
+                self._lod_pending.pop(field.planet_id, None)
+            return
+        self._lod_job = (field.planet_id, key, child, tuple(direction), altitude, future)
+        self._lod_pending[field.planet_id] = view
+
     def _stream_lod(self, direction, budget=1, *, field=None, altitude=0.):
         """Refine by observer distance, including in orbit before any reframe.
 
@@ -443,55 +725,136 @@ class SeamlessWorld:
         field = field or self.fields[self.planet["id"]]
         records = self._lod[field.planet_id]
         altitude = max(0., altitude)
+        budget = max(0, int(budget))
+        if not budget:
+            return
+        if self._lod_job is not None:
+            planet_id, key, child, requested_direction, requested_altitude, future = self._lod_job
+            if not future.done():
+                return
+            self._lod_job = None
+            try:
+                prepared = future.result()
+            except Exception as exc:
+                warnings.warn(f"Terrain worker stopped; using main thread: {exc}")
+                self._lod_async_disabled = True
+                self._lod_executor.shutdown(wait=False, cancel_futures=True)
+                self._lod_executor = None
+                prepared = None
+            if (planet_id == field.planet_id and key in records and
+                    len(records[key]["pending"]) < 4 and child not in records):
+                if self._add_lod_child(field, records, key, prepared):
+                    self._lod_pending[planet_id] = (requested_direction, requested_altitude, key)
+                else:
+                    self._lod_pending.pop(planet_id, None)
+            return
+        # Once a traversal made no changes, a nearly identical viewpoint has
+        # the same refinement decisions. Walking moves less than a tile sample
+        # between frames; avoid revisiting up to 1,022 records each time.
+        stable = self._lod_stable.get(field.planet_id)
+        if stable and len(records) == stable[2] and abs(altitude - stable[1]) < .25:
+            previous = stable[0]
+            if sum((direction[i] - previous[i]) ** 2 for i in range(3)) < (.25 / field.radius) ** 2:
+                return
+        self._lod_stable.pop(field.planet_id, None)
+        pending = self._lod_pending.pop(field.planet_id, None)
+        if pending and budget == 1 and abs(altitude - pending[1]) < 1.:
+            previous, _, key = pending
+            if (key in records and records[key]["pending"] and
+                    sum((direction[i] - previous[i]) ** 2 for i in range(3)) <
+                    (1. / field.radius) ** 2):
+                if self._gpu and len(records) > 100:
+                    self._queue_lod_child(field, records, key, direction, altitude)
+                    return
+                if self._add_lod_child(field, records, key):
+                    self._lod_pending[field.planet_id] = pending
+                return
+        ready = self._lod_ready.pop(field.planet_id, None)
+        if ready and budget == 1 and len(records) == ready[3] and abs(altitude - ready[1]) < 1.:
+            previous, _, key, _ = ready
+            if (key in records and not records[key]["children"] and
+                    sum((direction[i] - previous[i]) ** 2 for i in range(3)) <
+                    (1. / field.radius) ** 2):
+                if self._gpu and len(records) > 100:
+                    self._queue_lod_child(field, records, key, direction, altitude)
+                    return
+                if self._add_lod_child(field, records, key):
+                    self._lod_pending[field.planet_id] = (tuple(direction), altitude, key)
+                return
+        changed = False
         horizon = math.acos(min(1., field.radius / (field.radius + altitude + 180.)))
+        dx, dy, dz = direction
+        # The observer's cube-face projection is shared by every tile on that
+        # face. A traversal can visit hundreds of tiles in a single frame.
+        projections = []
+        for axis, east, north in _FACES:
+            facing = dx * axis.x + dy * axis.y + dz * axis.z
+            east_dot = dx * east.x + dy * east.y + dz * east.z
+            north_dot = dx * north.x + dy * north.y + dz * north.z
+            if facing > 1e-8:
+                px = field.radius * east_dot / facing
+                py = field.radius * north_dot / facing
+            else:
+                px = py = 0.
+            projections.append((facing, px, py, east_dot, north_dot))
         # At most 1,022 records (including hidden parents) for the active body.
         # Splits are a finite CPU budget and merges release their geometry.
-        for _ in range(max(0, int(budget))):
+        for _ in range(budget):
             requests = []
             def visit(key):
+                nonlocal changed
                 record = records[key]
                 x0, y0, x1, y1 = record["bounds"]
                 size = x1 - x0
-                angle = math.acos(max(-1., min(1., sum(a * b for a, b in
-                                                      zip(record["normal"], direction)))))
+                nx, ny, nz = record["normal"]
+                angle = math.acos(max(-1., min(1., nx * dx + ny * dy + nz * dz)))
                 visible = angle <= horizon + record["cone"] + .025
-                axis, east, north = _FACES[key[0]]
-                facing = sum(direction[k] * axis[k] for k in range(3))
+                children = record["children"]
+                pending = record["pending"]
+                balanced_target = records.get(record["balance_for"], {})
+                # A leaf that cannot refine or merge needs no cube-face
+                # projection or spherical distance calculation. Keep its
+                # balance request and wants_refine state exactly as before.
+                if (not children and not pending and
+                        (not visible or size <= 24.) and
+                        (altitude >= field.radius or
+                         not balanced_target.get("wants_refine", False))):
+                    record["wants_refine"] = False
+                    return
+                facing, px, py, east_dot, north_dot = projections[key[0]]
                 if facing > 1e-8:
-                    px = field.radius * sum(direction[k] * east[k] for k in range(3)) / facing
-                    py = field.radius * sum(direction[k] * north[k] for k in range(3)) / facing
-                    closest = _direction_components(key[0], max(x0, min(x1, px)),
-                                                    max(y0, min(y1, py)), field.radius)
-                    distance = field.radius * math.sqrt(sum((closest[k] - direction[k]) ** 2
-                                                           for k in range(3)))
+                    u = max(x0, min(x1, px)) / field.radius
+                    v = max(y0, min(y1, py)) / field.radius
+                    dot = (facing + east_dot * u + north_dot * v) / math.sqrt(1. + u*u + v*v)
+                    distance = field.radius * math.sqrt(max(0., 2. * (1. - dot)))
                 else:
                     distance = field.radius * max(0., angle - record["cone"])
                 viewing_distance = math.hypot(altitude, distance)
                 target_step = max(1.6, viewing_distance * .030)
                 resolution = 24 if key[1] == 0 else 12
-                hysteresis = .76 if record["children"] else 1.
+                hysteresis = .76 if children else 1.
                 refine = (visible and size > 24. and
                           size / resolution > target_step * hysteresis)
-                balanced_target = records.get(record["balance_for"], {})
                 if (not refine and altitude < field.radius and
-                        (record["pending"] or balanced_target.get("wants_refine", False))):
+                        (pending or balanced_target.get("wants_refine", False))):
                     refine = True
-                if (not refine and record["children"] and altitude < field.radius and
+                if (not refine and children and altitude < field.radius and
                         any(neighbour[1] > key[1] + 1 for neighbour in
                             self._lod_neighbours(records, field, key))):
                     refine = True
                 record["wants_refine"] = refine
                 if refine:
-                    if record["children"]:
-                        for child in record["children"]:
+                    if children:
+                        for child in children:
                             visit(child)
                     else:
                         # Cover the horizon and nearby patches before pursuing
                         # centimetric improvements in just one nearest branch.
                         error = size / resolution / max(20., viewing_distance)
-                        requests.append((not bool(record["pending"]), -error, distance, angle, key))
-                elif record["children"] or record["pending"]:
+                        requests.append((not bool(pending), -error, distance, angle, key))
+                elif children or pending:
                     self._merge_lod(records, key)
+                    changed = True
             for face in range(6):
                 visit((face, 0, 0, 0))
             if not requests:
@@ -511,21 +874,26 @@ class SeamlessWorld:
                 records[key]["balance_for"] = target
             if not records[key]["pending"] and len(records) + 4 > 1022:
                 break
-            face, level, ix, iy = key
-            children = tuple((face, level + 1, ix * 2 + dx, iy * 2 + dy)
-                             for dy in range(2) for dx in range(2))
+            # At runtime, split request selection from mesh construction.
+            # This avoids charging both the LOD walk and a vertex upload to
+            # the same rendered frame. Bulk setup still completes in one call.
+            if (budget == 1 and len(records) > 100 and not records[key]["pending"]
+                    and ready is None):
+                self._lod_ready[field.planet_id] = (tuple(direction), altitude,
+                                                    key, len(records))
+                return
             # Only one child mesh is built per work item. It remains hidden
             # until all siblings are ready, keeping CPU frame work predictable.
-            child = children[len(records[key]["pending"])]
-            records[child] = self._make_lod_patch(field, child)
-            records[child]["node"].hide()
-            records[key]["pending"] += (child,)
-            if len(records[key]["pending"]) == 4:
-                records[key]["children"] = children
-                records[key]["pending"] = ()
-                records[key]["node"].hide()
-                for child in children:
-                    records[child]["node"].show()
+            changed = True
+            if self._gpu and budget == 1 and len(records) > 100:
+                self._queue_lod_child(field, records, key, direction, altitude)
+                return
+            if self._add_lod_child(field, records, key):
+                self._lod_pending[field.planet_id] = (tuple(direction), altitude, key)
+            else:
+                self._lod_pending.pop(field.planet_id, None)
+        if not changed:
+            self._lod_stable[field.planet_id] = (tuple(direction), altitude, len(records))
 
     def _update_terrain(self, observer, field):
         """Stream the approach planet without requiring a surface frame."""
@@ -542,6 +910,9 @@ class SeamlessWorld:
         self._stream_lod(direction, field=field, altitude=altitude, budget=1)
 
     def _merge_lod(self, records, key):
+        if ((records[key]["children"] or records[key]["pending"]) and
+                getattr(self.state, "settings", {}).get("quality") != "low"):
+            self._shadow_revision += 1
         for child in records[key]["children"] + records[key]["pending"]:
             self._merge_lod(records, child)
             records.pop(child)["node"].removeNode()
@@ -644,6 +1015,18 @@ class SeamlessWorld:
         self._fauna.clear()
         self._buildings.clear()
         self._chunk_queue.clear()
+        self._chunk_prefetch_queue.clear()
+        if self._chunk_prefetch_pending is not None:
+            self._chunk_prefetch_pending[2]["root"].removeNode()
+            self._chunk_prefetch_pending = None
+        self._chunk_prefetch_tick = 0
+        self._chunk_plans.clear()
+        if self._chunk_executor is not None:
+            self._chunk_executor.shutdown(wait=False, cancel_futures=True)
+            self._chunk_executor = None
+        self._chunk_plan_job = None
+        self._chunk_plan_center = None
+        self._chunk_plan_quality = None
         self._chunk_center = None
         if self._near_planet_id and hasattr(self, "_lod"):
             records = self._lod.get(self._near_planet_id, {})
@@ -651,12 +1034,12 @@ class SeamlessWorld:
                 if (face, 0, 0, 0) in records:
                     self._merge_lod(records, (face, 0, 0, 0))
 
-    def _wanted_chunks(self, direction):
+    def _wanted_chunks(self, direction, *, extra=1):
         field = self.fields[self.planet["id"]]
         face, cx, cy = _address(direction, field.radius)
         # At a cube corner a face metre is shorter on the sphere.  Expand the
         # sampling window there, then retain the closest bounded set of cells.
-        radius = self._radius + 1
+        radius = self._radius + extra
         wanted = set()
         for dy in range(-radius, radius + 1):
             for dx in range(-radius, radius + 1):
@@ -665,32 +1048,243 @@ class SeamlessWorld:
                 wanted.add(_address(normal, field.radius))
         return wanted
 
+    def _prefetch_chunk_plans(self, direction, center):
+        """Prepare the next ring's placement data before it enters view."""
+        if not self._gpu or self._chunk_async_disabled:
+            return
+        quality = getattr(self.state, "settings", {}).get("quality", "medium")
+        if quality != self._chunk_plan_quality:
+            self._chunk_plans.clear()
+            self._chunk_plan_center = None
+            self._chunk_plan_quality = quality
+        job = self._chunk_plan_job
+        if job is None and center == self._chunk_plan_center:
+            return
+        if job is not None and not job[3].done():
+            return
+        wanted = self._wanted_chunks(direction, extra=2)
+        if job is not None:
+            planet_id, keys, cover_keys, future = job
+            self._chunk_plan_job = None
+            try:
+                planned_quality, plans, covers = future.result()
+            except Exception as exc:
+                warnings.warn(f"Scenery worker stopped; using main thread: {exc}")
+                self._chunk_async_disabled = True
+                if self._chunk_executor is not None:
+                    self._chunk_executor.shutdown(wait=False, cancel_futures=True)
+                    self._chunk_executor = None
+                return
+            if planet_id == self.planet["id"] and planned_quality == quality:
+                self._chunk_plans.update({key: plan for key, plan in plans.items()
+                                          if key in wanted and key not in self.chunks})
+                for key, cover_plan in covers.items():
+                    chunk = self.chunks.get(key)
+                    if (chunk is not None and not chunk.get("cover_ready", False) and
+                            "cover_rng" not in chunk and "cover_plan" not in chunk):
+                        chunk["cover_plan"] = cover_plan
+                        chunk["cover_plan_quality"] = quality
+        for key in tuple(self._chunk_plans):
+            if key not in wanted:
+                self._chunk_plans.pop(key)
+        missing = wanted - self.chunks.keys() - self._chunk_plans.keys()
+        if self._chunk_prefetch_pending is not None:
+            missing.discard(self._chunk_prefetch_pending[0])
+        # Existing scenery is visible now; precompute only the future ring.
+        missing -= set(self._chunk_queue)
+        cover_keys = tuple(key for key in self._chunk_queue
+                           if key not in self.chunks and key not in self._chunk_plans)
+        if not missing and not cover_keys:
+            self._chunk_plan_center = center
+            return
+        field = self.fields[self.planet["id"]]
+        def distance(key):
+            normal = _direction(key[0], (key[1] + .5) * CHUNK_SIZE,
+                                (key[2] + .5) * CHUNK_SIZE, field.radius)
+            return (normal - direction).lengthSquared()
+        keys = tuple(sorted(missing, key=distance))
+        try:
+            if self._chunk_executor is None:
+                self._chunk_executor = ProcessPoolExecutor(max_workers=1,
+                                                            mp_context=get_context("spawn"))
+            future = self._chunk_executor.submit(
+                _plan_chunk_batch_worker, self.planet, keys, cover_keys,
+                quality, self._large_frame)
+        except Exception as exc:
+            warnings.warn(f"Scenery worker unavailable; using main thread: {exc}")
+            self._chunk_async_disabled = True
+            return
+        self._chunk_plan_job = (self.planet["id"], keys, cover_keys, future)
+
     def _stream(self, position, budget=1, initial=False):
         if self.planet is None or self.frame is None:
             return
+        self._chunk_stream_busy = False
         field = self.fields[self.planet["id"]]
         direction = frame_to_world(self.frame, position) - field.center
         if direction.lengthSquared() < 1:
             direction = Vec3(self.frame.normal)
         direction.normalize()
+        if not initial:
+            self._chunk_prefetch_tick += 1
         center = _address(direction, field.radius)
         if center != self._chunk_center:
+            self._chunk_stream_busy = True
             self._chunk_center = center
             wanted = self._wanted_chunks(direction)
+            nearby = (self._wanted_chunks(direction, extra=2)
+                      if self._prefetch_visual_chunks else wanted)
+            if self._chunk_prefetch_pending is not None:
+                pending_key = self._chunk_prefetch_pending[0]
+                if pending_key in wanted:
+                    self._finish_prefetch_chunk(visible=True)
+                elif pending_key not in nearby:
+                    self._chunk_prefetch_pending[2]["root"].removeNode()
+                    self._chunk_prefetch_pending = None
             for key in tuple(self.chunks):
-                if key not in wanted:
+                if key not in nearby:
                     self._remove_chunk(key)
+                elif key in wanted:
+                    self._activate_chunk(key)
+                else:
+                    self._deactivate_chunk(key)
             def distance(key):
                 normal = _direction(key[0], (key[1] + .5) * CHUNK_SIZE,
                                     (key[2] + .5) * CHUNK_SIZE, field.radius)
                 return (normal - direction).lengthSquared()
             self._chunk_queue = sorted(wanted - self.chunks.keys(), key=distance)
+            prefetch_keys = nearby - wanted - self.chunks.keys()
+            if self._chunk_prefetch_pending is not None:
+                prefetch_keys.discard(self._chunk_prefetch_pending[0])
+            self._chunk_prefetch_queue = (sorted(prefetch_keys,
+                                                 key=distance)
+                                          if self._prefetch_visual_chunks else [])
+        self._prefetch_chunk_plans(direction, center)
+        # Fill visible ground cover before spending this frame on a farther
+        # chunk. Distant cover is only a few pixels high and can wait.
+        if not initial:
+            observer = self._world_tuple(position)
+            relative = tuple(observer[i] - field._center[i] for i in range(3))
+            for key, chunk in self.chunks.items():
+                if chunk.get("inactive") or chunk.get("cover_ready", True):
+                    continue
+                origin = chunk["decor_origin"]
+                if sum((origin[i] - relative[i]) ** 2 for i in range(3)) < self._cover_distance ** 2:
+                    self._populate_cover(key, budget=48)
+                    self._chunk_stream_busy = True
+                    return
         count = len(self._chunk_queue) if initial else budget
         for _ in range(min(count, len(self._chunk_queue))):
             self._make_chunk(self._chunk_queue.pop(0))
+            self._chunk_stream_busy = True
+        if initial and self._prefetch_visual_chunks:
+            # This is the loading frame. Build the first hidden ring here so
+            # movement starts with fully prepared scenery on every side.
+            for key in self._chunk_prefetch_queue:
+                self._make_chunk(key)
+                self._populate_cover(key)
+                self._deactivate_chunk(key)
+                self._prepare_prefetch_geometry(key)
+            self._chunk_prefetch_queue.clear()
+
+    def _build_prefetch_chunk(self):
+        if self._chunk_queue:
+            return
+        if self._chunk_prefetch_pending is not None:
+            if self._chunk_prefetch_pending[6] == 0:
+                self._finish_prefetch_scenery()
+            else:
+                self._finish_prefetch_chunk()
+            return
+        if not self._chunk_prefetch_queue:
+            return
+        key = self._chunk_prefetch_queue[0]
+        if key not in self._chunk_plans:
+            return
+        self._chunk_prefetch_queue.pop(0)
+        self._make_chunk(key, staged=True)
+
+    def _finish_prefetch_scenery(self):
+        key, plan, chunk, shapes, trees, small_decor, _ = self._chunk_prefetch_pending
+        self._finish_chunk_scenery(key, plan, trees, small_decor, shapes)
+        self._chunk_prefetch_pending = (key, plan, chunk, shapes, trees, small_decor, 1)
+
+    def _finish_prefetch_chunk(self, *, visible=False):
+        if self._chunk_prefetch_pending[6] == 0:
+            self._finish_prefetch_scenery()
+        key, plan, chunk, shapes, _, _, _ = self._chunk_prefetch_pending
+        self._chunk_prefetch_pending = None
+        self.chunks[key] = chunk
+        self._finish_chunk(key, plan, shapes)
+        if visible:
+            chunk["root"].show()
+        else:
+            # The root was hidden before any scenery was attached. Publish
+            # collision and entity records only after the build is complete.
+            chunk["root"].show()
+            self._deactivate_chunk(key)
+        if not self._gpu:
+            return
+        self._prepare_prefetch_geometry(key)
+
+    def _prepare_prefetch_geometry(self, key):
+        # The two unique scenery batches need a first GPU upload. Resource
+        # meshes share templates already prepared by the active chunks.
+        prepared = self.app.win.getGsg().getPreparedObjects()
+        decor = self.chunks[key]["root"].find("**/batched-local-flora-and-stones")
+        for path in decor.findAllMatches("**/+GeomNode"):
+            node = path.node()
+            for index in range(node.getNumGeoms()):
+                node.modifyGeom(index).prepare(prepared)
+
+    def _deactivate_chunk(self, key):
+        chunk = self.chunks[key]
+        if chunk.get("inactive"):
+            return
+        chunk["inactive"] = True
+        chunk["root"].hide()
+        chunk["inactive_entities"] = {
+            identifier: self._entities.pop(identifier)
+            for identifier in chunk["ids"] if identifier in self._entities}
+        chunk["inactive_fauna"] = {
+            identifier: self._fauna.pop(identifier)
+            for identifier in chunk["ids"] if identifier in self._fauna}
+        identifiers = (*chunk["ids"], chunk["collision_group"])
+        chunk["inactive_groups"] = {
+            identifier: self._surface_groups.pop(identifier)
+            for identifier in identifiers if identifier in self._surface_groups}
+        for identifier in identifiers:
+            self.collisions.remove_group(identifier)
+
+    def _activate_chunk(self, key):
+        chunk = self.chunks[key]
+        if not chunk.get("inactive"):
+            return
+        chunk["inactive"] = False
+        chunk["root"].show()
+        for identifier, entity in chunk.pop("inactive_entities").items():
+            if identifier in self._depleted:
+                entity["node"].removeNode()
+                continue
+            self._entities[identifier] = entity
+            self._refresh_entity(entity)
+        self._fauna.update({identifier: animation for identifier, animation in
+                            chunk.pop("inactive_fauna").items()
+                            if identifier not in self._depleted})
+        for identifier, records in chunk.pop("inactive_groups").items():
+            if identifier in self._depleted:
+                continue
+            self._surface_groups[identifier] = records
+            self._refresh_surface_group(identifier, records)
 
     def _remove_chunk(self, key):
         chunk = self.chunks.pop(key)
+        field = self.fields[self.planet["id"]]
+        observer = self._world_tuple(self._last_position)
+        relative = tuple(observer[i] - field._center[i] for i in range(3))
+        origin = chunk["decor_origin"]
+        if sum((origin[i] - relative[i]) ** 2 for i in range(3)) < 160. ** 2:
+            self._shadow_revision += 1
         for identifier in chunk["ids"]:
             self._entities.pop(identifier, None)
             self._fauna.pop(identifier, None)
@@ -831,90 +1425,150 @@ class SeamlessWorld:
                 math.hypot(u - 32, v - 62) < 13 + padding or
                 math.hypot(u + 86, v - 108) < 14 + padding)
 
-    def _make_chunk(self, key):
+    def _make_chunk(self, key, *, staged=False):
         face, cx, cy = key
         field = self.fields[self.planet["id"]]
         prefix = _tile_id(self.planet["id"], key)
+        quality = getattr(self.state, "settings", {}).get("quality", "medium")
+        plan = self._chunk_plans.pop(key, None)
+        if plan is None or plan["quality"] != quality:
+            plan = _plan_chunk(field, key, quality, self._large_frame)
+        seed, (x0, y0, x1, y1) = plan["seed"], plan["bounds"]
+        center, remote, decor_origin = plan["center"], plan["remote"], plan["decor_origin"]
         root = self.body_roots[self.planet["id"]].attachNewNode("geographic-chunk-" + prefix)
         group, ids = "chunk:" + prefix, []
-        self.chunks[key] = dict(root=root, ids=ids, collision_group=group)
-        # Face zero retains the original home-region generator seed and IDs.
-        seed = _seed(int(self.planet["seed"]), cx, cy, face * 101)
-        rng = random.Random(seed)
-        x0, y0 = max(-field.radius, cx * CHUNK_SIZE), max(-field.radius, cy * CHUNK_SIZE)
-        x1, y1 = min(field.radius, (cx + 1) * CHUNK_SIZE), min(field.radius, (cy + 1) * CHUNK_SIZE)
-        def location(border=0):
-            x, y = x0 + (border + rng.random() * (1 - border * 2)) * (x1 - x0), y0 + (border + rng.random() * (1 - border * 2)) * (y1 - y0)
-            return self._geo(_direction(face, x, y, field.radius))
-        center = self._geo(_direction(face, (x0 + x1) * .5, (y0 + y1) * .5, field.radius))
-        remote = (cx % 7 == 3 and cy % 7 == 4 and (face != 0 or abs(cx) + abs(cy) > 4)
-                  and center[2] > field.planet["water_level"] + 1)
-        def clearance(geo, padding=0):
-            return self._in_clearance(geo, padding) or (remote and math.hypot(geo[0] - center[0], geo[1] - center[1]) < 14 + padding)
+        chunk = dict(root=root, ids=ids, collision_group=group)
+        if staged:
+            root.hide()
+        else:
+            self.chunks[key] = chunk
         decor=root.attachNewNode("batched-local-flora-and-stones")
+        trees=decor.attachNewNode("tree-canopies")
+        small_decor=decor.attachNewNode("grass-and-stones")
         shapes = []
-        center_direction=chart_direction(center[0],center[1],field.radius)
-        decor_origin=tuple(float(c)*(field.radius+center[2]) for c in center_direction)
         decor.setPos(*decor_origin)
-        abundance = .6 if self.planet["biome"] in ("desert", "volcanic", "frozen") else 1.
-        for i in range(int(12 * abundance)):
-            geo = location()
-            if clearance(geo, 1) or geo[2] < field.planet["water_level"] + .5:
-                continue
-            scale, heading = rng.uniform(.75, 1.8), rng.uniform(0, 360)
-            if self._style == "mushroom":
-                scale *= 1.25
-            self._instance_decor(decor,"tree",i,geo,scale,heading,decor_origin)
+        for i, geo, scale, heading in plan["trees"]:
+            self._instance_decor(trees,"tree",i,geo,scale,heading,decor_origin)
             shapes.extend(self._shape_records(prefix + f":tree{i}",
                 _flora_shapes(self._style, int(self.planet["seed"]) + i % 3), geo, heading, scale))
-        for i in range(int(34 * abundance)):
-            geo = location()
-            if clearance(geo) or geo[2] < field.planet["water_level"]:
-                continue
-            self._instance_decor(decor,"grass",i,geo,rng.uniform(.65,1.7),rng.uniform(0,360),decor_origin)
-        for i in range(9):
-            geo = location()
-            if clearance(geo):
-                continue
-            scale, heading = rng.uniform(.4, 1.7), rng.uniform(0, 360)
-            self._instance_decor(decor,"rock",i,geo,scale,heading,decor_origin)
+        if staged:
+            self._chunk_prefetch_pending = (key, plan, chunk, shapes, trees, small_decor, 0)
+            return
+        self._finish_chunk_scenery(key, plan, trees, small_decor, shapes)
+        self._finish_chunk(key, plan, shapes)
+
+    def _finish_chunk_scenery(self, key, plan, trees, small_decor, shapes):
+        prefix = _tile_id(self.planet["id"], key)
+        decor_origin = plan["decor_origin"]
+        for i, geo, scale, heading in plan["grass"]:
+            self._instance_decor(small_decor,"grass",i,geo,scale,heading,decor_origin)
+        for i, geo, scale, heading in plan["rocks"]:
+            self._instance_decor(small_decor,"rock",i,geo,scale,heading,decor_origin)
             if scale > .62:
                 shapes.extend(self._shape_records(prefix + f":rock{i}",
                     [_cylinder("stone", (.12, 0, .53), .84, 1.35)], geo, heading, scale))
-        decor.flattenStrong()
+        trees.flattenStrong()
+        small_decor.flattenStrong()
+        # These metre-scale props add substantial shadow-map draw work while
+        # their shadows are too small to resolve at the map's ground coverage.
+        small_decor.hide(BitMask32.bit(1))
+
+    def _finish_chunk(self, key, plan, shapes):
+        _, cx, cy = key
+        field = self.fields[self.planet["id"]]
+        prefix = _tile_id(self.planet["id"], key)
+        seed, (x0, y0, x1, y1) = plan["seed"], plan["bounds"]
+        center, remote, decor_origin = plan["center"], plan["remote"], plan["decor_origin"]
+        quality = plan["quality"]
+        chunk = self.chunks[key]
+        root, group, ids = chunk["root"], chunk["collision_group"], chunk["ids"]
         self._set_surface_group(group, shapes)
-        for i in range(7):
-            geo = location(.13)
-            if clearance(geo, 2) or geo[2] < field.planet["water_level"] + .3:
-                continue
-            resources = self.planet["resources"]
-            resource = resources[rng.randrange(len(resources))]
+        for i, geo, resource, resource_seed in plan["resources"]:
             identifier = prefix + f":r{i}"
-            if self._resource(identifier, resource, geo, _seed(seed, cx, cy, i + 1), root):
+            if self._resource(identifier, resource, geo, resource_seed, root):
                 ids.append(identifier)
-        if rng.random() < .34 * float(self.planet.get("fauna_density", 1)):
-            if not clearance(center, 5) and center[2] > field.planet["water_level"] + 1:
-                identifier = prefix + ":fauna"
-                self._make_fauna(identifier, center, _seed(seed, cx, cy, 49), root)
-                ids.append(identifier)
+        if plan["fauna"]:
+            identifier = prefix + ":fauna"
+            self._make_fauna(identifier, center, _seed(seed, cx, cy, 49), root)
+            ids.append(identifier)
         if remote:
             kind = "outpost" if seed % 3 == 0 else "ruin"
             identifier = prefix + ":" + kind
             self._structure(identifier, kind, center, (seed % 4) * 90, root,
                             "Remote survey exchange" if kind == "outpost" else "Meridian listening halo")
             ids.append(identifier)
-        # An isolated random stream adds visual ground cover without shifting
-        # any pre-existing resource, animal, tree or saved-world identity.
-        micro_rng=random.Random(seed^0xC0FE146)
         cover=root.attachNewNode("batched-low-ground-cover")
         cover.setPos(*decor_origin)
-        quality=getattr(self.state,"settings",{}).get("quality","medium")
-        cover_count={"low":64,"medium":144,"high":192,"ultra":256}.get(quality,144)
-        vegetation=field.biome not in ("volcanic","frozen","desert")
-        cluster=None
-        for i in range(cover_count if vegetation else cover_count//5):
+        cover.hide(BitMask32.bit(1))
+        chunk.update(cover=cover, cover_ready=False, decor_origin=decor_origin,
+                     bounds=(x0, y0, x1, y1), center=center, remote=remote,
+                     seed=seed)
+        if "cover_plan" in plan:
+            chunk["cover_plan"] = plan["cover_plan"]
+            chunk["cover_plan_quality"] = quality
+        observer = self._world_tuple(self._last_position)
+        relative = tuple(observer[i] - field._center[i] for i in range(3))
+        if sum((decor_origin[i] - relative[i]) ** 2 for i in range(3)) < 160. ** 2:
+            self._shadow_revision += 1
+
+    def _populate_cover(self, key, budget=None):
+        """Build deterministic visual ground detail when its chunk is close."""
+        chunk = self.chunks[key]
+        if chunk["cover_ready"]:
+            return
+        face, _, _ = key
+        field = self.fields[self.planet["id"]]
+        x0, y0, x1, y1 = chunk["bounds"]
+        center, remote = chunk["center"], chunk["remote"]
+        decor_origin, cover = chunk["decor_origin"], chunk["cover"]
+        if ("cover_plan" in chunk and not chunk.get("cover_index", 0) and
+                chunk.get("cover_plan_quality") !=
+                getattr(self.state, "settings", {}).get("quality", "medium")):
+            chunk.pop("cover_plan")
+        if "cover_plan" in chunk:
+            placements = chunk["cover_plan"]
+            index = chunk.get("cover_index", 0)
+            if index == 0:
+                cover.hide(BitMask32.bit(0))
+            limit = len(placements) if budget is None else min(len(placements), index + budget)
+            for entry in placements[index:limit]:
+                if entry is not None:
+                    category, variant, geo, scale, heading = entry
+                    self._instance_decor(cover, category, variant, geo,
+                                         scale, heading, decor_origin)
+            if limit == len(placements):
+                cover.flattenStrong()
+                cover.show(BitMask32.bit(0))
+                chunk["cover_ready"] = True
+                chunk.pop("cover_plan")
+                chunk.pop("cover_plan_quality", None)
+                chunk.pop("cover_index", None)
+            else:
+                chunk["cover_index"] = limit
+            return
+        def clearance(geo, padding=0):
+            return self._in_clearance(geo, padding) or (remote and math.hypot(
+                geo[0] - center[0], geo[1] - center[1]) < 14 + padding)
+        # This random stream is independent of gameplay and resource layout.
+        if "cover_rng" not in chunk:
+            chunk["cover_rng"] = random.Random(chunk["seed"] ^ 0xC0FE146)
+            quality = getattr(self.state, "settings", {}).get("quality", "medium")
+            count = {"low":64,"medium":96,"high":192,"ultra":256}.get(quality, 96)
+            if quality == "medium" and self._large_frame:
+                count = 72
+            chunk["cover_total"] = count if field.biome not in ("volcanic", "frozen", "desert") else count // 5
+            chunk["cover_index"] = 0
+            chunk["cover_cluster"] = None
+            cover.hide(BitMask32.bit(0))
+        micro_rng = chunk["cover_rng"]
+        total = chunk["cover_total"]
+        limit = total + 18 if budget is None else min(total + 18, chunk["cover_index"] + budget)
+        while chunk["cover_index"] < min(total, limit):
+            i = chunk["cover_index"]
+            chunk["cover_index"] += 1
             if i%5==0:
-                cluster=(micro_rng.uniform(x0,x1),micro_rng.uniform(y0,y1))
+                chunk["cover_cluster"] = (micro_rng.uniform(x0,x1),micro_rng.uniform(y0,y1))
+            cluster = chunk["cover_cluster"]
             x=max(x0,min(x1,cluster[0]+micro_rng.uniform(-2.2,2.2)))
             y=max(y0,min(y1,cluster[1]+micro_rng.uniform(-2.2,2.2)))
             geo=self._geo(_direction(face,x,y,field.radius))
@@ -922,14 +1576,21 @@ class SeamlessWorld:
                 continue
             self._instance_decor(cover,"cover",i,geo,
                 micro_rng.uniform(.64,1.45),micro_rng.uniform(0,360),decor_origin)
-        for i in range(18):
+        while chunk["cover_index"] < limit:
+            i = chunk["cover_index"] - total
+            chunk["cover_index"] += 1
             geo=self._geo(_direction(face,micro_rng.uniform(x0,x1),
                                      micro_rng.uniform(y0,y1),field.radius))
             if clearance(geo,.2) or geo[2]<field.water_level+.15:
                 continue
             self._instance_decor(cover,"pebble",i,geo,
                 micro_rng.uniform(.45,1.1),micro_rng.uniform(0,360),decor_origin)
-        cover.flattenStrong()
+        if chunk["cover_index"] == total + 18:
+            cover.flattenStrong()
+            cover.show(BitMask32.bit(0))
+            chunk["cover_ready"] = True
+            for name in ("cover_rng", "cover_total", "cover_index", "cover_cluster"):
+                chunk.pop(name)
 
     def _resource_template(self, resource, seed):
         """One immutable art buffer; variation is independent of visit order."""
@@ -1092,6 +1753,7 @@ class SeamlessWorld:
         elapsed = _number(elapsed, 0., 0., 1e9)
         storm = _number(storm, 0., 0., 1.)
         position = Vec3(*_xyz(local_camera_position))
+        stream_started = time.perf_counter()
         self._last_position = position
         observer = frame_to_world(self.frame, position)
         # Only the sky's origin follows the observer. Its axes stay galactic,
@@ -1102,6 +1764,10 @@ class SeamlessWorld:
 
         nearest = min(self.fields.values(), key=lambda field: field.altitude(observer))
         self._update_terrain(observer, nearest)
+        if (self._prefetch_visual_chunks and self.planet is not None and self.frame is not None and
+                not self._chunk_stream_busy and self._chunk_prefetch_tick % 2 == 0 and
+                time.perf_counter() - stream_started < .0004):
+            self._build_prefetch_chunk()
         data = nearest.atmosphere(observer)
         if self._environment and self._environment.get("planet_id") == nearest.planet_id:
             # Altitude is always derived from this camera pose; externally
@@ -1138,8 +1804,13 @@ class SeamlessWorld:
         else:
             self.root.clearFog()
         self.app.setBackgroundColor(.004, .008, .019, 1)
-        for weather in self._weather.values():
-            weather.update(observer, storm)
+        # Distant planetary limbs barely shift between frames. Keep the
+        # nearest atmosphere responsive and refresh the others at 10-20 Hz.
+        self._weather_tick += 1
+        for identifier, weather in self._weather.items():
+            if (identifier == nearest.planet_id or self._weather_tick == 1 or
+                    self._weather_tick % 6 == 0):
+                weather.update(observer, storm)
 
         for identifier, animation in tuple(self._fauna.items()):
             entity = self._entities.get(identifier)

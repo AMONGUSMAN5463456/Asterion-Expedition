@@ -263,7 +263,10 @@ class PlanetField:
 
     def color(self, direction):
         direction = _unit(direction)
-        elevation, continental, medium, fine, blend = self._samples(*direction)
+        return self._color_from_sample(direction, self._samples(*direction))
+
+    def _color_from_sample(self, direction, sample):
+        elevation, continental, medium, fine, blend = sample
         depth = elevation-self.water_level
         sea = _mix(_shade(self.water, .36), _shade(self.water, .86),
                    _smooth(-38, -.5, depth))

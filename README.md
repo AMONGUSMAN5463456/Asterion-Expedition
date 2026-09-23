@@ -86,6 +86,15 @@ Use 64-bit CPython 3.10–3.14. Desktop graphics support is required. A keyboard
 mouse or trackpad are required; a mouse is easiest for flight and mining. The
 interface is designed for a 1280 × 720 or larger window.
 
+For an exact 2560 × 1440 display, launch from the game folder with
+`python3 bootstrap.py --borderless --width 2560 --height 1440` (or use the
+platform's Python launcher). On a multi-monitor desktop, use `--origin-x` and
+`--origin-y` to place the window on the intended display. Omit `--borderless`
+for a decorated window. Frame rate is uncapped by default; add `--vsync` to
+synchronize with the monitor. At 1440p and above, **MEDIUM** uses a shorter scenery range and
+turns off sun shadows to preserve frame rate. **HIGH** retains the longer range
+and shadows; **LOW** is the fastest preset.
+
 ## Your first expedition
 
 Start beside your courier ship on Talora, a gentle emerald world. Walk toward a

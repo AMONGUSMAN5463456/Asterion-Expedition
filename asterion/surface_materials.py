@@ -26,14 +26,14 @@ def _mix(a, b, value):
     return tuple(a[i] * (1 - value) + b[i] * value for i in range(3))
 
 
-def terrain_albedo(field, direction):
+def terrain_albedo(field, direction, *, sample=None):
     """Give geology metre-scale colour variation without altering geography.
 
     Alpha stores signed seabed depth for the opaque GPU ocean material. It is
     explicitly never used for transparency, including on the software path.
     """
-    color = field.color(direction)
-    depth = field.seabed_elevation(direction) - field.water_level
+    depth = (sample[0] if sample is not None else
+             field.seabed_elevation(direction)) - field.water_level
     payload = .5 + max(-32., min(32., depth)) / 64.
     if depth < -.5:
         # A clear turquoise shelf grades into deep, saturated ocean basins.
@@ -41,6 +41,8 @@ def terrain_albedo(field, direction):
         color = _mix(tuple(c * .44 for c in field.water),
                      _mix(field.water, (.21, .70, .65), .24), shallows)
         return (*color, payload)
+    color = (field._color_from_sample(direction, sample) if sample is not None
+             else field.color(direction))
     x, y, z = (float(c) * field.radius for c in direction)
     phase = field._phase
     broad = field._noise(x * .012 + phase[0], y * .012 + phase[1], z * .012 + phase[2])

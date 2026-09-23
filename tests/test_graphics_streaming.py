@@ -6,7 +6,7 @@ from unittest.mock import patch
 from panda3d.core import NodePath
 
 from asterion.planetary import PlanetField, PlanetFrame
-from asterion.seamless_world import SeamlessWorld
+from asterion.seamless_world import SeamlessWorld, _plan_chunk
 from asterion.state import GameState
 from asterion.universe import generate_system
 
@@ -76,6 +76,91 @@ class GraphicsStreamingTests(unittest.TestCase):
         self.assertFalse(self.world._chunk_queue)
         self.assertEqual(first,self.world.chunks)
         self.world.chunks.clear()
+
+    def test_distant_ground_cover_builds_once_when_approached(self):
+        key = (0, 3, 2)
+        self.world._make_chunk(key)
+        chunk = self.world.chunks[key]
+        self.assertFalse(chunk["cover_ready"])
+        self.world._populate_cover(key)
+        self.assertTrue(chunk["cover_ready"])
+        cover = chunk["cover"]
+        count = cover.findAllMatches("**/+GeomNode").getNumPaths()
+        self.assertGreater(count, 0)
+        self.world._populate_cover(key)
+        self.assertEqual(cover.findAllMatches("**/+GeomNode").getNumPaths(), count)
+
+    def test_prefetched_chunk_does_not_restore_depleted_resources(self):
+        key = (0, 1, -1)
+        self.world._make_chunk(key)
+        resource = next(identifier for identifier in self.world.chunks[key]["ids"]
+                        if ":r" in identifier)
+        node = self.world._entities[resource]["node"]
+        self.world._deactivate_chunk(key)
+        self.assertNotIn(resource, self.world._entities)
+        self.world.set_depleted(resource)
+        self.world._activate_chunk(key)
+        self.assertNotIn(resource, self.world._entities)
+        self.assertTrue(node.isEmpty())
+
+    def test_staged_chunk_has_the_same_scenery_and_entities(self):
+        key = (0, 1, -1)
+        self.world._make_chunk(key)
+        original = self.world.chunks[key]
+        original_ids = tuple(original["ids"])
+        original_bounds = original["root"].getTightBounds()
+        original_entities = {identifier: self.world._entities[identifier]["geo"]
+                             for identifier in original_ids if identifier in self.world._entities}
+        self.world._remove_chunk(key)
+
+        self.world._make_chunk(key, staged=True)
+        self.assertNotIn(key, self.world.chunks)
+        self.assertTrue(self.world._chunk_prefetch_pending[2]["root"].isHidden())
+        self.world._finish_prefetch_chunk(visible=True)
+        staged = self.world.chunks[key]
+        self.assertIsNone(self.world._chunk_prefetch_pending)
+        self.assertFalse(staged["root"].isHidden())
+        self.assertEqual(tuple(staged["ids"]), original_ids)
+        self.assertEqual(staged["root"].getTightBounds(), original_bounds)
+        self.assertEqual({identifier: self.world._entities[identifier]["geo"]
+                          for identifier in staged["ids"] if identifier in self.world._entities},
+                         original_entities)
+
+        self.world._remove_chunk(key)
+        self.world._make_chunk(key, staged=True)
+        self.world._finish_prefetch_chunk()
+        self.assertTrue(self.world.chunks[key]["inactive"])
+        self.assertTrue(self.world.chunks[key]["root"].isHidden())
+        self.world._activate_chunk(key)
+        self.assertFalse(self.world.chunks[key]["root"].isHidden())
+        self.assertEqual(tuple(self.world.chunks[key]["ids"]), original_ids)
+
+    def test_staged_ground_cover_matches_a_full_build(self):
+        key = (0, 3, 2)
+        self.world._make_chunk(key)
+        chunk = self.world.chunks[key]
+        self.world._populate_cover(key, budget=20)
+        self.assertFalse(chunk["cover_ready"])
+        while not chunk["cover_ready"]:
+            self.world._populate_cover(key, budget=20)
+        staged_bounds = chunk["cover"].getTightBounds()
+        staged_count = chunk["cover"].findAllMatches("**/+GeomNode").getNumPaths()
+        self.world._remove_chunk(key)
+        self.world._make_chunk(key)
+        self.world._populate_cover(key)
+        cover = self.world.chunks[key]["cover"]
+        self.assertEqual(cover.findAllMatches("**/+GeomNode").getNumPaths(), staged_count)
+        self.assertEqual(cover.getTightBounds(), staged_bounds)
+        self.world._remove_chunk(key)
+        field = self.world.fields[self.planet["id"]]
+        self.world._chunk_plans[key] = _plan_chunk(
+            field, key, "medium", False, with_cover=True)
+        self.world._make_chunk(key)
+        while not self.world.chunks[key]["cover_ready"]:
+            self.world._populate_cover(key, budget=20)
+        cover = self.world.chunks[key]["cover"]
+        self.assertEqual(cover.findAllMatches("**/+GeomNode").getNumPaths(), staged_count)
+        self.assertEqual(cover.getTightBounds(), staged_bounds)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ No gameplay, camera movement, terrain vertices or saved state live here.
 from __future__ import annotations
 
 from pathlib import Path
+import time
 import warnings
 
 from panda3d.core import (
@@ -18,6 +19,7 @@ from panda3d.core import (
 _SHADERS = Path(__file__).with_name("shaders")
 _SUN = Vec3(-.68, -.62, .39).normalized()
 SHADOW_MASK = BitMask32.bit(1)
+SHADOW_SIZE = 1024
 
 
 def shader(vertex, fragment):
@@ -37,6 +39,7 @@ class VisualPipeline:
         self.scene_shader = None
         self._destroyed = False
         self._size = None
+        self._shadow_snapshot = None
         gsg = app.win.getGsg() if app.win else None
         # Panda's basic-shader flag refers to Cg on macOS; GLSL is independent.
         self.gpu = bool(gsg and (gsg.getDriverShaderVersionMajor(),
@@ -59,7 +62,7 @@ class VisualPipeline:
         app.render.setShaderInput("ae_fog_density", 0.)
         app.render.setShaderInput("ae_shadow_enabled", 0.)
         app.render.setShaderInput("ae_world_to_shadow", Mat4.identMat())
-        app.render.setShaderInput("ae_shadow_texel", 1. / 1536.)
+        app.render.setShaderInput("ae_shadow_texel", 1. / SHADOW_SIZE)
         self._make_shadows()
         self._make_post()
 
@@ -76,7 +79,7 @@ class VisualPipeline:
         fbp.setRgbColor(True)
         fbp.setDepthBits(24)
         fbp.setMultisamples(0)
-        buffer = app.win.makeTextureBuffer("celestial-sun-shadow", 1536, 1536,
+        buffer = app.win.makeTextureBuffer("celestial-sun-shadow", SHADOW_SIZE, SHADOW_SIZE,
                                           None, False, fbp)
         if buffer is None:
             warnings.warn("Sun shadow buffer unavailable; using ambient lighting.")
@@ -192,8 +195,10 @@ class VisualPipeline:
             world.root.setShaderInput("ae_fog_density", world._fog.getExpDensity())
         if self.shadow_camera is not None:
             altitude = getattr(world, "environment", {}).get("altitude", 0.)
-            active = altitude < 650 and sunlight.dot(up) > .035
-            self.shadow_buffer.setActive(active)
+            quality = app.game.settings.get("quality", "medium")
+            large_frame = app.win.getXSize() * app.win.getYSize() >= int(2560 * 1440 * .95)
+            active = (quality != "low" and not (quality == "medium" and large_frame) and
+                      altitude < 650 and sunlight.dot(up) > .035)
             strength=max(0.,min(1.,(650.-altitude)/160.))
             strength*=max(0.,min(1.,(sunlight.dot(up)-.035)/.12))
             app.render.setShaderInput("ae_shadow_enabled", strength if active else 0.)
@@ -202,11 +207,26 @@ class VisualPipeline:
                 forward -= up*forward.dot(up)
                 if forward.lengthSquared() > .01:
                     forward.normalize()
-                center = camera+forward*36-up*4
-                self.shadow_camera.setPos(center+sunlight*190)
-                self.shadow_camera.lookAt(center, up)
-                matrix = app.render.getMat(self.shadow_camera) * self.shadow_camera.node().getLens().getProjectionMat()
-                app.render.setShaderInput("ae_world_to_shadow", matrix)
+                now = time.monotonic()
+                revision = getattr(world, "_shadow_revision", 0)
+                last = self._shadow_snapshot
+                refresh = (quality in ("high", "ultra") or last is None or
+                           last[0] != revision or now - last[4] >= .12 or
+                           (camera-last[1]).lengthSquared() > 1.5**2 or
+                           forward.dot(last[2]) < .999 or sunlight.dot(last[3]) < .9999)
+                self.shadow_buffer.setActive(refresh)
+                if refresh:
+                    center = camera+forward*36-up*4
+                    self.shadow_camera.setPos(center+sunlight*190)
+                    self.shadow_camera.lookAt(center, up)
+                    matrix = (app.render.getMat(self.shadow_camera) *
+                              self.shadow_camera.node().getLens().getProjectionMat())
+                    app.render.setShaderInput("ae_world_to_shadow", matrix)
+                    self._shadow_snapshot = (revision, Vec3(camera), Vec3(forward),
+                                             Vec3(sunlight), now)
+            else:
+                self.shadow_buffer.setActive(False)
+                self._shadow_snapshot = None
 
     def destroy(self):
         if self._destroyed:

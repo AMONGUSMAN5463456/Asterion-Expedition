@@ -167,6 +167,14 @@ class NativeInterfaceTests(unittest.TestCase):
         self.assertTrue(root.isEmpty())
         self.assertFalse(self.ui.panel_open)
 
+    def test_hidden_hud_refreshes_when_shown(self):
+        self.ui.update({"mode": "surface", "location": "Old location"})
+        self.ui.set_visible(False)
+        self.ui.update({"mode": "surface", "location": "New location"})
+        self.assertEqual(self.read("location"), "Old location")
+        self.ui.set_visible(True)
+        self.assertEqual(self.read("location"), "New location")
+
     def test_settings_callback_refresh_and_scroll_position(self):
         payload = {"key": "camera_motion", "value": 0}
         panel = {"title": "Settings", "id": "settings", "rows": [

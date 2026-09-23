@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import math
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -167,6 +168,7 @@ class GameUI:
         self.height = 900.0
         self._hud_labels = {}
         self._vital_bars = {}
+        self._measure_cache = OrderedDict()
         parent = getattr(app, "aspect2d", None)
         self._available = isinstance(parent, NodePath) and not parent.isEmpty()
         if not self._available:
@@ -301,16 +303,25 @@ class GameUI:
 
     def _measure(self, text, size=18, bold=False, width=None):
         size = max(13.5, size) if size != 1 else size
+        text = self._clean(text)
+        key = (text, size, bool(bold), width)
+        cached = self._measure_cache.get(key)
+        if cached is not None:
+            self._measure_cache.move_to_end(key)
+            return cached
         node = TextNode("asterion-measure")
         font = self._font_for(bold or 1 < size <= 14)
         if font is not None:
             node.setFont(font)
-        text = self._clean(text)
         if width is not None:
             node.setWordwrap(max(1.0, width / size))
         node.setText(text)
         rows = max(1, node.getNumRows())
-        return node.getWidth() * size, rows * size * 1.24
+        result = (node.getWidth() * size, rows * size * 1.24)
+        self._measure_cache[key] = result
+        if len(self._measure_cache) > 2048:
+            self._measure_cache.popitem(last=False)
+        return result
 
     def _short(self, value, width, size, bold=False):
         text = self._clean(value).replace("\n", " ")
@@ -728,7 +739,8 @@ class GameUI:
         if not self._available:
             return
         self._layout()
-        self._update_hud(self._view)
+        if self._visible:
+            self._update_hud(self._view)
 
     def _update_hud(self, view):
         if not self._hud_labels:
@@ -1469,8 +1481,12 @@ class GameUI:
             self.menu.show()
 
     def set_visible(self, visible: bool):
+        restored = bool(visible) and not self._visible
         self._visible = bool(visible)
         if not self._destroyed:
+            if restored and self._available:
+                self._layout()
+                self._update_hud(self._view)
             self._apply_visibility()
 
     def destroy(self):
@@ -1482,5 +1498,6 @@ class GameUI:
             self.root.removeNode()
         self._destroyed = True
         self._available = False
+        self._measure_cache.clear()
         self._panel_kind = None
         self.root = self.hud = self.menu = None
